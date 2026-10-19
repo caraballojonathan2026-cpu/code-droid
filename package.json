@@ -1,12 +1,13 @@
 {
   "name": "code-droid",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "A featherweight, web-based Android IDE. Kotlin in, APK out. Runs on a 4GB-RAM machine. No Android Studio, no Gradle, no emulator.",
   "main": "server/launcher.js",
   "scripts": {
     "start": "node server/launcher.js",
     "dev": "node server/server.js",
     "setup": "bash tools/install.sh",
+    "doctor": "bash tools/doctor.sh",
     "test": "node tools/selftest.js",
     "smoke": "node tools/ui-smoke.js"
   },

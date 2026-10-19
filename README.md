@@ -34,6 +34,9 @@ Measured in a **1.9 GB RAM / 2 CPU** sandbox: a **201-file Kotlin app** builds i
 git clone https://github.com/YOUR-USERNAME/code-droid.git
 cd code-droid
 
+# 0. sanity check your machine (Node 16+, JDK 11+, zip/unzip, curl)
+npm run doctor
+
 # 1. one-time toolchain download (~300MB: Kotlin compiler, build-tools, android.jar)
 bash tools/install.sh
 
@@ -43,8 +46,8 @@ npm start     # supervisor + server — enables the in-IDE ⟳ restart button
 # 3. open http://localhost:3000 — the "hello-droid" sample is already there
 ```
 
-Press **▶ Build APK** → watch the pipeline in the console → **⬇ APK**.
-Check the compiler any time with **`npm test`** (self-test builds the sample twice and verifies the signature).
+Press **▶ Build APK** → watch the pipeline in the console → **⬇ APK** downloads straight to your Downloads folder.
+Check the compiler any time with **`npm test`** (self-test builds the sample and verifies the signature) and the UI with **`npm run smoke`**.
 
 ## Feature tour (v0.2)
 
