@@ -121,7 +121,18 @@ function renderTree() {
   const host = $('file-tree');
   host.innerHTML = '';
   if (!state.treeCache.data) { host.textContent = '(loading…)'; return; }
-  host.appendChild(renderNodes(state.treeCache.data));
+  // VS Code style: the project itself is the collapsible root row
+  const rootOpen = !state.expanded.has('__root__');
+  const root = document.createElement('div');
+  root.className = 'tree-item tree-root';
+  root.innerHTML = `<span class="ico">${rootOpen ? '▾' : '▸'}</span><span class="name">📦 ${esc(state.project)}</span>`;
+  root.title = state.project;
+  root.onclick = () => {
+    if (rootOpen) state.expanded.add('__root__'); else state.expanded.delete('__root__');
+    persistUI(); renderTree();
+  };
+  host.appendChild(root);
+  if (rootOpen) host.appendChild(renderNodes(state.treeCache.data));
 }
 
 function renderNodes(nodes) {
@@ -132,7 +143,8 @@ function renderNodes(nodes) {
     if (isDir) li.className = 'tree-dir';
     const item = document.createElement('div');
     item.className = 'tree-item' + (state.active === n.path ? ' active' : '');
-    item.innerHTML = `<span class="ico">${isDir ? (state.expanded.has(n.path) ? '▾' : '▸') : iconFor(n.name)}</span>${esc(n.name)}${!isDir && n.size ? `<span class="size">${fmtSize(n.size)}</span>` : ''}`;
+    item.innerHTML = `<span class="ico">${isDir ? (state.expanded.has(n.path) ? '▾' : '▸') : iconFor(n.name)}</span><span class="name">${esc(n.name)}</span>`;
+    item.title = n.path + (!isDir && n.size != null ? `  ·  ${fmtSize(n.size)}` : '');
     item.dataset.path = n.path;
     if (isDir) {
       item.onclick = () => {
@@ -634,8 +646,17 @@ document.addEventListener('keydown', (e) => {
   const mod = e.ctrlKey || e.metaKey;
   if (mod && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); qoOpen(); }
   if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); openSearch(); }
+  if (mod && !e.shiftKey && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSidebar(); }
   if (e.key === 'Escape') { if (qo.open) qoClose(); }
 });
+
+/* ---------------- sidebar (VS Code style collapse, Ctrl+B) ---------------- */
+function toggleSidebar() {
+  document.body.classList.toggle('sidebar-collapsed');
+  ls.set('cd.sidebar', document.body.classList.contains('sidebar-collapsed') ? 'collapsed' : 'open');
+}
+$('btn-toggle-sidebar').onclick = toggleSidebar;
+$('sidebar-grip').onclick = toggleSidebar;
 
 /* ---------------- UI state persistence ---------------- */
 function persistUI() {
@@ -678,6 +699,7 @@ $('project-select').onchange = async (e) => {
 (async function boot() {
   log('<span class="info">Welcome to code-droid v0.2! The light Android IDE. 🤖<br>New: Ctrl+P quick-open · Ctrl+Shift+F search · drafts auto-saved in your browser · Import/Export .zip · ⟳ restart.</span>');
   if (ls.get('cd.console') === 'collapsed') $('console-pane').classList.add('collapsed');
+  if (ls.get('cd.sidebar') === 'collapsed') document.body.classList.add('sidebar-collapsed');
   const savedProject = ls.get('cd.project');
   await Promise.all([checkTools(), loadProjects(savedProject || undefined)]);
   // restore tabs & active file

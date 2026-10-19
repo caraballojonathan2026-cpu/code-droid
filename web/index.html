@@ -42,7 +42,7 @@
 
 <main id="workspace">
   <aside id="sidebar">
-    <div class="pane-title">PROJECT</div>
+    <div class="pane-title"><span>EXPLORER</span><button id="btn-toggle-sidebar" title="Hide panel (Ctrl+B)">«</button></div>
     <div id="file-tree"></div>
   </aside>
 
@@ -58,12 +58,14 @@
         <span id="file-status"></span>
       </div>
     </div>
+    <div id="sidebar-grip" title="Show explorer (Ctrl+B)"></div>
     <div id="welcome">
       <h1>🤖 code-droid</h1>
       <p>Android Studio's little sibling that fits in a browser tab.</p>
       <ul>
         <li><b>Ctrl+P</b> — jump to any file instantly</li>
         <li><b>Ctrl+Shift+F</b> — search across the whole project</li>
+        <li><b>Ctrl+B</b> — hide / show the explorer panel</li>
         <li><b>Ctrl+S</b> — save (unsaved work is kept in the browser anyway 💾)</li>
         <li><b>▶ Build APK</b> — compile with the direct toolchain (no Gradle!)</li>
         <li>⇧ Import / ⇩ Export projects as .zip — take your work anywhere</li>
@@ -114,6 +116,7 @@ npm start               # supervisor + server (the ⟳ button works)</pre>
       <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Save current file</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td><td>Quick-open any file</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></td><td>Search in project</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>B</kbd></td><td>Toggle the explorer panel</td></tr>
       <tr><td><kbd>Tab</kbd></td><td>Insert 4 spaces</td></tr>
     </table>
   </div>

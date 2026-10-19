@@ -51,7 +51,7 @@ Check the compiler any time with **`npm test`** (self-test builds the sample twi
 **Built for big projects**
 - 🔍 **Ctrl+P** quick-open any file; **Ctrl+Shift+F** project-wide search with clickable results that jump to the exact line
 - Editor uses a *viewport highlighter*: only the visible lines are colorized, so files with 100K+ lines stay smooth; line-number gutter included; >2 MB files open read-only instead of freezing
-- Lazy file tree — renders folders only when expanded; small projects auto-expand, big ones don't choke
+- **VS Code-style Explorer**: compact 22px rows, tight indentation, collapsible project root, sizes in tooltips — and **Ctrl+B** hides the whole panel when you need the space
 - **Cached stdlib DEX**: kotlin-stdlib is dexed once ever; rebuilds only dex *your* code (that's why warm builds are ~2× faster)
 - Builds pass *directories* to kotlinc/d8 (not file lists) — no command-length limits on huge projects
 
