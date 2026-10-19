@@ -37,13 +37,128 @@ const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + 'MB' : n > 1024 
 const fmtTime = (t) => new Date(t).toLocaleTimeString();
 
 /* ---------------- API ---------------- */
+/* Static demo mode: when the IDE is served without its node server
+ * (GitHub Pages, file://, sandboxed previews), /api/* 404s. Instead of
+ * failing at boot, the IDE serves the bundled hello project from
+ * web/static-files.json, persists edits in localStorage, and gives
+ * server-only features (build, import/export, restart) a clear message. */
+let CD_STATIC = false;
 async function api(path, opts = {}) {
+  if (CD_STATIC) return staticApi(path, opts);
   const res = await fetch(path, opts.body ? {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opts.body),
   } : {});
   const data = await res.json().catch(() => ({}));
   if (!res.ok && !data.steps) throw new Error(data.error || ('HTTP ' + res.status));
   return data;
+}
+
+const staticStore = {
+  manifest: null, files: null,
+  async load() {
+    if (this.files) return this.files;
+    const res = await fetch('static-files.json');
+    if (!res.ok) throw new Error('static-files.json missing (HTTP ' + res.status + ')');
+    this.manifest = await res.json();
+    this.files = { ...this.manifest.files };
+    let overlay = {};
+    try { overlay = JSON.parse(localStorage.getItem('cd.static.overlay') || '{}'); } catch {}
+    for (const [p, c] of Object.entries(overlay)) {
+      if (c === null || c === undefined) delete this.files[p]; else this.files[p] = c;
+    }
+    return this.files;
+  },
+  persist() {
+    const diff = {};
+    for (const [p, c] of Object.entries(this.files)) if (this.manifest.files[p] !== c) diff[p] = c;
+    for (const p of Object.keys(this.manifest.files)) if (!(p in this.files)) diff[p] = null;
+    try { localStorage.setItem('cd.static.overlay', JSON.stringify(diff)); } catch { /* quota — best effort */ }
+  },
+};
+
+function staticTree(files) {
+  const root = {};
+  for (const fp of Object.keys(files)) {
+    const parts = fp.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length; i++) {
+      const last = i === parts.length - 1;
+      const key = parts.slice(0, i + 1).join('/');
+      node[key] = node[key] || { name: parts[i], path: key, type: last ? 'file' : 'dir', children: {} };
+      if (last) node[key].size = files[fp].length;
+      node = node[key].children;
+    }
+  }
+  const conv = (n) => Object.values(n)
+    .map((c) => c.type === 'dir'
+      ? { name: c.name, path: c.path, type: 'dir', children: conv(c.children) }
+      : { name: c.name, path: c.path, type: 'file', size: c.size })
+    .sort((a, b) => ((b.type === 'dir') - (a.type === 'dir')) || a.name.localeCompare(b.name));
+  return conv(root);
+}
+
+async function staticApi(path, opts = {}) {
+  const u = new URL(path, location.href);
+  const p = u.pathname, q = u.searchParams, body = opts.body || {};
+  const norm = (s) => String(s || '').replace(/^\/+|\/+$/g, '');
+  const noServer = (what) => { throw new Error(what + ' needs the code-droid server.\nRun it locally:  node server/server.js'); };
+  const files = await staticStore.load();
+  const proj = staticStore.manifest.project;
+
+  if (p === '/api/projects') return { projects: [{ id: proj.id, name: proj.name }] };
+  if (p === '/api/tools') return { ready: false, missing: [], static: true };
+  if (p === '/api/files') {
+    const tree = staticTree(files);
+    return { tree, truncated: false, nodeCount: Object.keys(files).length };
+  }
+  if (p === '/api/file' && !opts.body) {
+    const rel = norm(q.get('path'));
+    if (!(rel in files)) throw new Error('HTTP 404');
+    return { path: rel, content: files[rel], mtime: Date.now(), size: files[rel].length };
+  }
+  if (p === '/api/file' && opts.body) {
+    const rel = norm(body.path);
+    files[rel] = String(body.content ?? '');
+    staticStore.persist();
+    return { saved: rel, mtime: Date.now() };
+  }
+  if (p === '/api/file/new') {
+    let rel = norm(body.path);
+    if (body.type === 'dir') rel = rel + '/.keep';
+    if (!(rel in files)) files[rel] = '';
+    staticStore.persist();
+    return { created: body.path };
+  }
+  if (p === '/api/file/delete') {
+    const rel = norm(body.path);
+    for (const k of Object.keys(files)) if (k === rel || k.startsWith(rel + '/')) delete files[k];
+    staticStore.persist();
+    return { deleted: body.path };
+  }
+  if (p === '/api/file/rename') {
+    const rel = norm(body.path), np = norm(body.newPath);
+    for (const k of Object.keys(files)) {
+      if (k === rel || k.startsWith(rel + '/')) { files[np + k.slice(rel.length)] = files[k]; delete files[k]; }
+    }
+    staticStore.persist();
+    return { renamed: body.path, to: body.newPath };
+  }
+  if (p === '/api/search') {
+    const needle = q.get('q') || '', ci = q.get('ci') !== '0';
+    const ndl = ci ? needle.toLowerCase() : needle;
+    const results = [];
+    for (const [fp, content] of Object.entries(files)) {
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length && results.length < 100; i++) {
+        const hay = ci ? lines[i].toLowerCase() : lines[i];
+        if (hay.includes(ndl)) results.push({ file: fp, line: i + 1, preview: lines[i].slice(0, 200) });
+      }
+    }
+    return { results, truncated: results.length >= 100 };
+  }
+  if (p === '/api/build') return noServer('Building APKs');
+  if (p === '/api/project/new') return noServer('Creating projects');
+  return noServer('This feature');
 }
 
 /* ---------------- console ---------------- */
@@ -62,6 +177,13 @@ async function checkTools() {
   const badge = $('tool-status');
   try {
     const t = await api('/api/tools');
+    if (t.static) {
+      badge.textContent = '● static demo';
+      badge.className = 'badge ready';
+      badge.title = 'No server: browse & edit freely — APK builds need node server/server.js';
+      badge.onclick = () => log('<span class="info">Static demo mode (no server).\nEditing works and stays in this browser.\nFor APK builds, run the project locally: <b>node server/server.js</b></span>');
+      return;
+    }
     if (t.ready) {
       badge.textContent = '● toolchain ready';
       badge.className = 'badge ready';
@@ -647,6 +769,7 @@ async function newProject() {
 
 /* ---------------- import / export / restart ---------------- */
 $('btn-export').onclick = () => {
+  if (CD_STATIC) { log('<span class="info">Export needs the code-droid server (static demo mode).</span>'); return; }
   if (!state.project) return;
   saveAll().finally(() => {
     offerDownload('/api/project/export?project=' + encodeURIComponent(state.project), state.project + '.zip');
@@ -657,6 +780,7 @@ $('import-file').addEventListener('change', async (e) => {
   const f = e.target.files[0];
   e.target.value = '';
   if (!f) return;
+  if (CD_STATIC) { log('<span class="err">Import needs the code-droid server (static demo mode).</span>'); return; }
   log(`<span class="info">⇧ Importing ${esc(f.name)} (${fmtSize(f.size)})…</span>`);
   try {
     const res = await fetch('/api/project/import?name=' + encodeURIComponent(f.name.replace(/\.zip$/i, '')), {
@@ -670,6 +794,7 @@ $('import-file').addEventListener('change', async (e) => {
 });
 
 $('btn-restart').onclick = async () => {
+  if (CD_STATIC) { log('<span class="info">⟳ No server to restart in static demo mode.</span>'); return; }
   if (!confirm('Restart the code-droid server?\n\nYour open tabs and unsaved work are backed up in this browser and will come back.')) return;
   stashActive();
   if (state.active && curTab().dirty) saveDraft(state.active, editor.value, curTab().mtime);
@@ -962,6 +1087,12 @@ $('project-select').onchange = async (e) => {
 (async function boot() {
   try {
     log('<span class="info">Welcome to code-droid! The light Android IDE. 🤖<br>Ctrl+P quick-open · Ctrl+Shift+F search · Ctrl+B explorer · drafts auto-saved in your browser · Import/Export .zip · ⟳ restart.</span>');
+    // static demo mode: no node server (GitHub Pages, file://, previews)
+    try {
+      const hr = await fetch('/api/health', { cache: 'no-store' });
+      CD_STATIC = !hr.ok;
+    } catch { CD_STATIC = true; }
+    if (CD_STATIC) log('<span class="info">📄 <b>Static demo mode</b> — no code-droid server detected. Explorer & editing work; changes stay in this browser. APK builds need <b>node server/server.js</b> running locally.</span>');
     if (ls.get('cd.console') === 'collapsed') $('console-pane').classList.add('collapsed');
     if (ls.get('cd.sidebar') === 'collapsed') document.body.classList.add('sidebar-collapsed');
     const savedProject = ls.get('cd.project');
