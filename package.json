@@ -1,0 +1,14 @@
+{
+  "name": "code-droid",
+  "version": "0.1.0",
+  "description": "A featherweight, web-based Android IDE. Kotlin in, APK out. Runs on a 4GB-RAM machine. No Android Studio, no Gradle, no emulator.",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "setup": "bash tools/install.sh"
+  },
+  "engines": { "node": ">=16" },
+  "license": "MIT",
+  "keywords": ["android", "ide", "kotlin", "apk", "lightweight", "low-ram", "web-ide"],
+  "repository": "https://github.com/YOUR-USERNAME/code-droid"
+}

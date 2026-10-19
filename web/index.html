@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>code-droid — the light Android IDE</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#129302;</text></svg>">
+</head>
+<body>
+<header id="topbar">
+  <div id="brand"><span class="logo">🤖</span> code-droid <span class="tag">the light Android IDE</span></div>
+  <div id="topbar-right">
+    <span id="tool-status" class="badge unknown" title="Toolchain status">checking tools…</span>
+    <select id="project-select" title="Project"></select>
+    <button id="btn-new-project" title="New project">＋ Project</button>
+    <button id="btn-new-file" title="New file in project">＋ File</button>
+    <button id="btn-save" title="Save (Ctrl+S)">💾 Save</button>
+    <button id="btn-build" class="primary" title="Compile to APK">▶ Build APK</button>
+    <a id="btn-apk" class="button hidden" title="Download APK" download>⬇ APK</a>
+    <button id="btn-help" title="Help">?</button>
+  </div>
+</header>
+
+<main id="workspace">
+  <aside id="sidebar">
+    <div class="pane-title">PROJECT</div>
+    <div id="file-tree"></div>
+  </aside>
+
+  <section id="editor-area">
+    <div id="tabs"></div>
+    <div id="editor-wrap" class="hidden">
+      <pre id="highlight-layer" aria-hidden="true"><code id="highlight-code"></code></pre>
+      <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+      <div id="statusline"><span id="cursor-pos">Ln 1, Col 1</span><span id="file-status"></span></div>
+    </div>
+    <div id="welcome">
+      <h1>🤖 code-droid</h1>
+      <p>Android Studio's little sibling that fits in a browser tab.</p>
+      <ul>
+        <li>Open a file from the <b>PROJECT</b> tree</li>
+        <li>Edit Kotlin — <b>Ctrl+S</b> saves</li>
+        <li><b>▶ Build APK</b> compiles with the direct toolchain (no Gradle!)</li>
+        <li>Install the APK on a real phone — no emulator needed</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="console-pane" class="collapsed">
+    <div id="console-header">
+      <span>BUILD CONSOLE</span>
+      <span id="build-summary"></span>
+      <button id="btn-toggle-console">▁</button>
+      <button id="btn-clear-console">✕</button>
+    </div>
+    <div id="console"></div>
+  </section>
+</main>
+
+<div id="help-modal" class="hidden">
+  <div id="help-card">
+    <button id="btn-close-help">✕</button>
+    <h2>🤖 code-droid help</h2>
+    <h3>Why is this light?</h3>
+    <p>Android Studio + Gradle + emulator can need <b>8–16&nbsp;GB</b> of disk and multiple GB of RAM.
+       code-droid uses a <b>~300&nbsp;MB</b> direct toolchain (<code>aapt2 → kotlinc → d8 → zipalign → apksigner</code>)
+       and skips the emulator — you test on a real phone. The whole IDE is one HTML file, one CSS file and two small JS files. No frameworks.</p>
+    <h3>First-time setup</h3>
+    <pre>bash tools/install.sh   # downloads ~300MB toolchain, once
+npm start               # or: node server/server.js</pre>
+    <h3>Run the app on your phone</h3>
+    <ol>
+      <li>Enable <b>Developer options → USB debugging</b> on the phone, plug it in, then:<br><code>adb install -r projects/hello-droid/build/app-debug.apk</code></li>
+      <li>…or download the APK with the <b>⬇ APK</b> button, copy it to the phone (USB / Drive / chat) and tap it. Allow “install unknown apps” when Android asks.</li>
+    </ol>
+    <h3>Shortcuts</h3>
+    <table>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>Save current file</td></tr>
+      <tr><td><kbd>Tab</kbd></td><td>Insert 4 spaces</td></tr>
+    </table>
+  </div>
+</div>
+
+<script src="kotlin.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

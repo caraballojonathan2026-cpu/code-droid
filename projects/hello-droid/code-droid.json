@@ -1,0 +1,6 @@
+{
+  "appName": "Hello Droid",
+  "applicationId": "com.example.hellodroid",
+  "minSdk": 21,
+  "targetSdk": 34
+}

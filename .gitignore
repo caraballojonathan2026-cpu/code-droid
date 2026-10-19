@@ -1,0 +1,14 @@
+# Toolchain (downloaded by tools/install.sh — never commit ~300MB of binaries)
+tools/sdk/
+tools/kotlin/
+tools/debug.keystore
+tools/*.zip
+
+# Build outputs
+projects/*/build/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+node_modules/
+*.log
