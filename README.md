@@ -8,11 +8,12 @@
 │  ┌───────────────────────┐  │  HTTP  │  file store + build runner   │
 │  │ code-droid web IDE    │◄─┼────────┤  aapt2 → kotlinc → d8        │
 │  │ • Kotlin highlighting │  │  JSON  │  → zipalign → apksigner      │
-│  │ • file tree & tabs    │  │        │           │                  │
-│  │ • one-click APK build │  │        │           ▼                  │
-│  └───────────────────────┘  │        │      app-debug.apk  ──► 📱   │
-└─────────────────────────────┘        └──────────────────────────────┘
-     ≈ 150 KB of HTML/CSS/JS              ≈ 300 MB toolchain, ~100 MB RAM server
+│  │ • Ctrl+P, Ctrl+Shift+F│  │        │  (+ cached stdlib dex)       │
+│  │ • autosave to browser │  │        │           │                  │
+│  └───────────────────────┘  │        │           ▼                  │
+└─────────────────────────────┘        │      app-debug.apk  ──► 📱   │
+     ≈ 200 KB of HTML/CSS/JS           └──────────────────────────────┘
+                                        ≈ 300 MB toolchain, ~100 MB RAM
 ```
 
 ## Why?
@@ -22,10 +23,10 @@
 | Disk footprint | ~8–12 GB (IDE + SDK + emulator images) | **~300 MB** |
 | RAM while coding | 2–4 GB (IDE + Gradle daemon) | **a browser tab + ~100 MB** |
 | RAM while building | 1.5–3 GB (Gradle + AGP + Kotlin daemon) | **~0.5 GB** (direct tools, no daemons) |
+| Rebuild after a change | tens of seconds (task graph, config cache) | **~7 s** warm (stdlib dex is cached) |
 | Test device | bundled x86 emulator (very heavy) | **your real phone** (USB or APK transfer) |
-| Stack | IDE + Gradle + AGP + Kotlin plugin + emulator | one Node script + 5 command-line tools |
 
-Android Studio is great — it's just too big for old laptops, Chromebooks, classrooms and low-end machines. code-droid keeps the part that matters (write Kotlin → get an APK) and deletes the rest.
+Measured in a **1.9 GB RAM / 2 CPU** sandbox: hello world builds + signs in ~16 s cold, **~7 s** warm; a 41-file app in ~13 s. Numbers live in `npm test`.
 
 ## Quick start
 
@@ -37,90 +38,106 @@ cd code-droid
 bash tools/install.sh
 
 # 2. start the IDE (needs Node.js 16+, needs NOTHING else)
-npm start
+npm start     # supervisor + server — enables the in-IDE ⟳ restart button
 
 # 3. open http://localhost:3000 — the "hello-droid" sample is already there
 ```
 
-Press **▶ Build APK** → watch the 7-step pipeline in the console → **⬇ APK**.
+Press **▶ Build APK** → watch the pipeline in the console → **⬇ APK**.
+Check the compiler any time with **`npm test`** (self-test builds the sample twice and verifies the signature).
+
+## Feature tour (v0.2)
+
+**Built for big projects**
+- 🔍 **Ctrl+P** quick-open any file; **Ctrl+Shift+F** project-wide search with clickable results that jump to the exact line
+- Editor uses a *viewport highlighter*: only the visible lines are colorized, so files with 100K+ lines stay smooth; line-number gutter included; >2 MB files open read-only instead of freezing
+- Lazy file tree — renders folders only when expanded; small projects auto-expand, big ones don't choke
+- **Cached stdlib DEX**: kotlin-stdlib is dexed once ever; rebuilds only dex *your* code (that's why warm builds are ~2× faster)
+- Builds pass *directories* to kotlinc/d8 (not file lists) — no command-length limits on huge projects
+
+**Never lose work**
+- Every keystroke is backed up to **localStorage** after 0.4 s; close the tab, crash, restart the server — reopen and unsaved changes are restored with a banner (save or discard)
+- Remembers open tabs, active file, expanded folders, selected project, console state
+- Unsaved tabs you *close* also keep a draft copy
+
+**Self-contained workflow**
+- **⇩ Export** — download the whole project as a .zip (build output excluded)
+- **⇧ Import** — drop in a .zip, it becomes a project (name conflicts auto-renamed)
+- **⟳ Restart** — respawn the server from the UI (works because `npm start` runs a tiny supervisor); the page reloads and your work is still there
+- Project picker, "＋ Project" from template, "＋ File", dark Darcula theme, Android-green accent
 
 ### Install the app on your phone (no emulator!)
 
 1. **USB + adb** (nicest): enable *Developer options → USB debugging* on the phone, then
    `adb install -r projects/hello-droid/build/app-debug.apk`
-2. **Or just copy the APK**: send it to the phone (USB cable, Google Drive, Telegram/WhatsApp to yourself…), tap it, allow *install unknown apps* once.
-
-Either way you get a real app with an icon in the launcher: **Hello Droid**.
+2. **Or just copy the APK**: send it to the phone (USB cable, Google Drive, chat…), tap it, allow *install unknown apps* once.
 
 ## What's inside
 
 ```
 code-droid/
-├── server/            zero-dependency Node.js backend (~100MB RAM)
-│   ├── server.js      HTTP + JSON API
-│   ├── builder.js     the direct build pipeline (NO Gradle)
+├── server/            zero-dependency Node.js backend
+│   ├── launcher.js    supervisor — respawns the server for the ⟳ button
+│   ├── server.js      HTTP + JSON API (files, search, build, import/export, restart)
+│   ├── builder.js     the direct build pipeline + stdlib dex cache (NO Gradle)
 │   ├── toolchain.js   finds kotlinc / build-tools / android.jar (or your existing SDK)
-│   └── store.js       projects & files, path-traversal safe
-├── web/               the IDE — plain HTML/CSS/JS, ~150KB total
-│   ├── index.html     layout (top bar, tree, editor, build console)
+│   └── store.js       projects, files, full-text search — path-traversal safe
+├── web/               the IDE — plain HTML/CSS/JS, ~200KB total
+│   ├── index.html     top bar, tree, editor+line numbers, console, quick-open, search, banners
 │   ├── style.css      Darcula-inspired dark theme
 │   ├── kotlin.js      hand-rolled Kotlin/XML syntax highlighter
-│   └── app.js         tabs, autosave-on-build, console, APK download
+│   └── app.js         viewport rendering, drafts, quick-open, search, import/export, restart
 ├── templates/hello/   sample Kotlin app ("Hello Droid") without any Gradle files
 ├── tools/install.sh   downloads the ~300MB toolchain as plain zips
+├── tools/selftest.js  npm test — proves the whole compiler pipeline works
 └── docs/ARCHITECTURE.md
 ```
 
-### The build pipeline (what Gradle hides from you, step by step)
+### The build pipeline (what Gradle hides from you)
 
 1. `aapt2 compile` — resources → flat archive
 2. `aapt2 link` — manifest + resources + `android.jar` → unsigned APK + `R.java`
 3. `kotlinc` — your Kotlin → JVM bytecode
-4. `d8` — bytecode + kotlin-stdlib → `classes.dex`
-5. `zip` — inject the dex into the APK
-6. `zipalign` — 4-byte alignment (required by Android)
+4. `d8` — your bytecode → `classes.dex` **+ cached** kotlin-stdlib → `classes2.dex` (native multidex)
+5. `zip` — inject all dex shards into the APK
+6. `zipalign` — 4-byte alignment
 7. `apksigner` — sign with an auto-generated debug key → **installable APK**
 
-Every step prints its timing in the build console, so you can *see* where the seconds go (spoiler: mostly kotlinc's JVM startup; still seconds, not minutes).
-
 ## Project layout (a code-droid app)
-
-A project is just a folder — if you know Android's `src/main` convention you're home:
 
 ```
 my-app/
 ├── code-droid.json                    { "appName", "applicationId", "minSdk": 21 }
 └── app/src/main/
-    ├── AndroidManifest.xml
-    ├── java/com/example/myapp/MainActivity.kt
+    ├── AndroidManifest.xml            (versionCode/versionName live here)
+    ├── java/com/example/myapp/*.kt    (as many files as you like)
     └── res/values/strings.xml         (optional — UIs can be pure Kotlin code)
 ```
 
 ## Current limits (honest list) & roadmap
 
-This is a young project. Today it intentionally does **not** support: AndroidX/Jetpack libraries, Jetpack Compose, AAR dependencies, native code (NDK), resource shrinking, release signing UI, or the emulator. What's planned:
+Not yet: AndroidX/Jetpack libraries, Jetpack Compose, AAR dependencies, NDK, resource shrinking (R8), release signing UI, emulator. Planned:
 
 - [ ] Live/streaming build logs (SSE)
-- [ ] More templates (list app, sensor app, camera intents)
-- [ ] Wireless ADB pairing from the browser (WebUSB)
-- [ ] Optional `kotlin-language-server` for autocomplete (heavier — opt-in)
-- [ ] AndroidX support via Maven AAR fetching (opt-in, cached)
+- [ ] More templates (list app, sensor app, multi-activity)
+- [ ] Wireless ADB install from the browser
+- [ ] Optional `kotlin-language-server` autocomplete (opt-in; heavier)
+- [ ] AndroidX support via cached Maven AAR fetching (opt-in)
 - [ ] Release-keystore signing UI
-- [ ] PWA mode so the IDE works offline
 
-**Contributions very welcome** — the whole codebase is deliberately small and dependency-free.
+**Contributions welcome** — the codebase is deliberately small and dependency-free.
 
 ## FAQ
 
 **Is the APK "real"?** Yes — same tools Android Studio calls under the hood (`aapt2`, `d8`, `apksigner`), just without Gradle orchestrating them.
 
-**Can I use my existing Android SDK instead of downloading?** Yes: set `ANDROID_HOME` (or drop a `build-tools` + `platforms` folder into `tools/sdk/`) and install.sh will skip what's already there — only Kotlin is fetched.
+**Can I use my existing Android SDK?** Yes: set `ANDROID_HOME`, and `install.sh` fetches only Kotlin.
 
-**Why no emulator?** On a 4GB machine an emulator is what makes everything lag. Real phones are faster, free, and already in your pocket.
+**Why no emulator?** On a 4GB machine the emulator is what makes everything lag. Your real phone is faster, free, and already in your pocket.
 
-**Does it need internet?** Only once, for `tools/install.sh`. After that, coding and building are fully offline.
+**Offline?** Only `tools/install.sh` needs internet, once. Coding/building work fully offline; unsaved work lives in the browser.
 
-**Server on another machine?** Sure — run `HOST=0.0.0.0 npm start` on a beefier box and code from a tablet/Chromebook. (No auth yet; LAN-only, please.)
+**Server on another machine?** Yes — `HOST=0.0.0.0 npm start` on a beefier box, code from a tablet/Chromebook. (No auth yet; LAN-only, please.)
 
 ## License
 

@@ -75,4 +75,5 @@
     if (/\.(xml|html)$/.test(filename)) return highlightXml(src);
     return highlightKotlin(src); // .kt, .kts, .json and plain text all pass here reasonably
   };
+  global.CDHighlight.esc = escapeHtml; // exposed for viewport-mode rendering
 })(window);

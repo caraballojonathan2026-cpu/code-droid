@@ -1,6 +1,7 @@
 # Toolchain (downloaded by tools/install.sh — never commit ~300MB of binaries)
 tools/sdk/
 tools/kotlin/
+tools/dex-cache/
 tools/debug.keystore
 tools/*.zip
 

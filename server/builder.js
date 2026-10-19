@@ -4,18 +4,22 @@
  *   1. aapt2 compile  res/            -> res.zip
  *   2. aapt2 link     manifest + res  -> unsigned.apk + generated R.java
  *   3. kotlinc        *.kt (+R.java)  -> JVM classes      (against android.jar)
- *   4. d8             classes+stdlib  -> classes.dex      (with desugaring)
- *   5. zip            classes.dex     -> injected into unsigned.apk
+ *   4. d8             classes         -> classes.dex      (project code only!)
+ *      d8 (cached)    kotlin-stdlib   -> classes2.dex     (dexed ONCE, then reused)
+ *   5. zip            all *.dex       -> injected into unsigned.apk (native multidex)
  *   6. zipalign       4-byte align    -> aligned.apk
- *   7. apksigner      debug keystore  -> app-debug.apk  (ready to install!)
+ *   7. apksigner      debug keystore  -> app-debug.apk
  *
- * A hello-world APK builds in seconds with roughly 10x less RAM than a
- * Gradle-based build, and there is no daemon sitting around afterwards.
+ * Large-app strategy: the Kotlin standard library never changes between builds,
+ * so its DEX is cached under <tools>/dex-cache/ (keyed by jar size + minSdk).
+ * After the first build, recompiles only dex YOUR code — on big projects this
+ * is the difference between ~30s and ~5s rebuilds.
  */
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execFileSync } = require('child_process');
 
 function run(name, cmd, args, opts = {}) {
@@ -23,8 +27,8 @@ function run(name, cmd, args, opts = {}) {
   try {
     const out = execFileSync(cmd, args, {
       encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, JAVA_OPTS: process.env.JAVA_OPTS || '-Xmx1024m' },
+      maxBuffer: 128 * 1024 * 1024,
+      env: { ...process.env, JAVA_OPTS: process.env.JAVA_OPTS || '-Xmx1536m' },
       ...opts,
     });
     return { name, ok: true, ms: Date.now() - t0, log: (out || '').trim() };
@@ -41,6 +45,10 @@ function walk(dir, ext, out = []) {
     else if (!ext || e.name.endsWith(ext)) out.push(p);
   }
   return out;
+}
+
+function dexShards(dir) {
+  return fs.readdirSync(dir).filter((f) => /^classes(\d*)\.dex$/.test(f)).sort();
 }
 
 function ensureKeystore(tools, steps) {
@@ -60,14 +68,28 @@ function ensureKeystore(tools, steps) {
   return false;
 }
 
+/* Dex kotlin-stdlib once per (jar, minSdk) and cache the shards. */
+function ensureStdlibDex(T, minApi, toolsRoot, steps) {
+  if (!T.kotlin.stdlib || !fs.existsSync(T.kotlin.stdlib)) return null;
+  const st = fs.statSync(T.kotlin.stdlib);
+  const key = `stdlib-${st.size}-${minApi}`;
+  const cacheDir = path.join(toolsRoot, 'dex-cache', key);
+  if (fs.existsSync(cacheDir) && dexShards(cacheDir).length) {
+    steps.push({ name: 'd8 (kotlin-stdlib)', ok: true, ms: 0, log: 'cached ✔ (delete tools/dex-cache to rebuild)' });
+    return cacheDir;
+  }
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const s = run('d8 (kotlin-stdlib, one-time)', T.d8, ['--release', '--lib', T.sdk.androidJar,
+    '--min-api', minApi, '--output', cacheDir, T.kotlin.stdlib]);
+  steps.push(s);
+  return s.ok ? cacheDir : null;
+}
+
 function buildProject(projectRoot, toolsInfo) {
   if (!toolsInfo.ready) {
     return {
-      ok: false,
-      stage: 'toolchain',
-      missing: toolsInfo.missing,
-      error: 'Toolchain incomplete. Run: ' + toolsInfo.installHint,
-      steps: [],
+      ok: false, stage: 'toolchain', missing: toolsInfo.missing,
+      error: 'Toolchain incomplete. Run: ' + toolsInfo.installHint, steps: [],
     };
   }
   const T = toolsInfo.tools;
@@ -78,7 +100,8 @@ function buildProject(projectRoot, toolsInfo) {
   const buildDir = path.join(projectRoot, 'build');
   const genDir = path.join(buildDir, 'gen');
   const classesDir = path.join(buildDir, 'classes');
-  const dexDir = path.join(buildDir, 'dex');
+  const projectDexDir = path.join(buildDir, 'dex');
+  const finalDexDir = path.join(buildDir, 'dex-final');
   const unsignedApk = path.join(buildDir, 'unsigned.apk');
   const alignedApk = path.join(buildDir, 'aligned.apk');
   const finalApk = path.join(buildDir, 'app-debug.apk');
@@ -86,19 +109,20 @@ function buildProject(projectRoot, toolsInfo) {
   if (!fs.existsSync(manifest)) return { ok: false, error: 'No app/src/main/AndroidManifest.xml — is this a code-droid project?', steps: [] };
 
   fs.rmSync(buildDir, { recursive: true, force: true });
-  for (const d of [buildDir, genDir, classesDir, dexDir]) fs.mkdirSync(d, { recursive: true });
+  for (const d of [buildDir, genDir, classesDir, projectDexDir, finalDexDir]) fs.mkdirSync(d, { recursive: true });
 
   const meta = (() => { try { return JSON.parse(fs.readFileSync(path.join(projectRoot, 'code-droid.json'), 'utf8')); } catch { return {}; } })();
-  const minApi = String(meta.minSdk || 21);
-  // Android 14+ refuses to install apps whose targetSdk < 23, so always stamp a
-  // modern targetSdk — capped at the android.jar we compile against.
+  const minApiNum = Math.max(Number(meta.minSdk) || 21, 21); // 21+ => native multidex (no main-dex list needed)
+  const minApi = String(minApiNum);
+  // Android 14+ refuses installs with targetSdk < 23; stamp a modern target, capped at our android.jar.
   const platformApi = (() => { const m = /android-(\d+)/.exec(T.sdk.platform || ''); return m ? Number(m[1]) : 33; })();
   const targetApi = String(Math.min(Number(meta.targetSdk || platformApi), platformApi));
 
   const steps = [];
   const step = (name, cmd, args, opts) => { const s = run(name, cmd, args, opts); steps.push(s); return s.ok; };
+  const fail = (s) => ({ ok: false, steps: s, error: (s.filter((x) => !x.ok).pop() || {}).name + ' failed' });
 
-  // 1) compile resources (res/ is optional for code-only UIs)
+  // 1) compile resources (optional for code-only UIs)
   if (fs.existsSync(resDir) && fs.readdirSync(resDir).length) {
     if (!step('aapt2 compile', T.aapt2, ['compile', '--dir', resDir, '-o', path.join(buildDir, 'res.zip')])) return fail(steps);
   }
@@ -110,19 +134,20 @@ function buildProject(projectRoot, toolsInfo) {
   if (fs.existsSync(path.join(buildDir, 'res.zip'))) linkArgs.push(path.join(buildDir, 'res.zip'));
   if (!step('aapt2 link', T.aapt2, linkArgs)) return fail(steps);
 
-  // 3) Kotlin compile (project sources; gen dir passed for R symbol resolution)
-  const ktRoots = [javaDir, path.join(srcMain, 'kotlin')].filter((d) => fs.existsSync(d));
+  // 3) Kotlin compile (handles any number of files: we pass directories, not file lists)
+  const ktRoots = [javaDir, path.join(srcMain, 'kotlin')].filter((d) => fs.existsSync(d) && walk(d, '.kt').length);
   if (!ktRoots.length) return fail(steps.concat([{ name: 'kotlinc', ok: false, ms: 0, log: 'No Kotlin sources under app/src/main/java' }]));
+  const ktCount = ktRoots.reduce((n, d) => n + walk(d, '.kt').length, 0);
   const cp = [T.sdk.androidJar, T.kotlin.stdlib].filter(Boolean).join(path.delimiter);
-  if (!step('kotlinc', T.kotlin.bin, [...ktRoots, genDir, '-classpath', cp, '-d', classesDir])) return fail(steps);
+  if (!step(`kotlinc (${ktCount} files)`, T.kotlin.bin, [...ktRoots, genDir, '-classpath', cp, '-d', classesDir])) return fail(steps);
 
-  // 3b) compile generated R.java with javac (needed when resources exist)
+  // 3b) compile generated R.java
   const genJava = walk(genDir, '.java');
   if (genJava.length && toolsInfo.tools.java.javac) {
     if (!step('javac (R.java)', toolsInfo.tools.java.javac, ['-cp', T.sdk.androidJar, '-d', classesDir, ...genJava])) return fail(steps);
   }
 
-  // 4) DEX: jar classes, then d8 (bundle kotlin-stdlib so Kotlin just works)
+  // 4) DEX the project classes (jar first so argument lists stay short on huge projects)
   const classFiles = walk(classesDir, '.class');
   if (!classFiles.length) return fail(steps.concat([{ name: 'd8', ok: false, ms: 0, log: 'kotlinc produced no class files' }]));
   let d8Inputs;
@@ -133,11 +158,27 @@ function buildProject(projectRoot, toolsInfo) {
   } else {
     d8Inputs = classFiles;
   }
-  if (T.kotlin.stdlib && fs.existsSync(T.kotlin.stdlib)) d8Inputs.push(T.kotlin.stdlib);
-  if (!step('d8', T.d8, ['--release', '--lib', T.sdk.androidJar, '--min-api', minApi, '--output', dexDir, ...d8Inputs])) return fail(steps);
+  if (!step('d8 (project)', T.d8, ['--release', '--lib', T.sdk.androidJar, '--min-api', minApi, '--output', projectDexDir, ...d8Inputs])) return fail(steps);
 
-  // 5) inject classes.dex into the APK (a plain zip operation)
-  if (!step('package dex', T.zip, ['-j', unsignedApk, path.join(dexDir, 'classes.dex')])) return fail(steps);
+  // 4b) cached stdlib dex
+  const toolsRoot = path.dirname(toolsInfo.tools.keystore);
+  const stdlibCache = ensureStdlibDex(T, minApi, toolsRoot, steps);
+  if (stdlibCache === null && T.kotlin.stdlib) return fail(steps);
+
+  // 5) assemble dex set: project shards are classes.dex.., stdlib shards follow (classes2.dex…)
+  const projectShards = dexShards(projectDexDir);
+  projectShards.forEach((f, i) => {
+    fs.copyFileSync(path.join(projectDexDir, f), path.join(finalDexDir, i === 0 ? 'classes.dex' : `classes${i + 1}.dex`));
+  });
+  let dexCount = projectShards.length;
+  if (stdlibCache) {
+    for (const f of dexShards(stdlibCache)) {
+      dexCount++;
+      fs.copyFileSync(path.join(stdlibCache, f), path.join(finalDexDir, dexCount === 1 ? 'classes.dex' : `classes${dexCount}.dex`));
+    }
+  }
+  const dexPaths = fs.readdirSync(finalDexDir).filter((f) => f.endsWith('.dex')).sort().map((f) => path.join(finalDexDir, f));
+  if (!step(`package ${dexPaths.length} dex`, T.zip, ['-j', unsignedApk, ...dexPaths])) return fail(steps);
 
   // 6) align
   if (!step('zipalign', T.zipalign, ['-f', '-p', '4', unsignedApk, alignedApk])) return fail(steps);
@@ -160,10 +201,6 @@ function buildProject(projectRoot, toolsInfo) {
       manual: 'Or copy the APK to your phone (USB, Drive, messaging) and tap it. Allow "install from unknown sources" when asked.',
     },
   };
-
-  function fail(s) {
-    return { ok: false, steps: s, error: (s.filter((x) => !x.ok).pop() || {}).name + ' failed' };
-  }
 }
 
 module.exports = { buildProject };
