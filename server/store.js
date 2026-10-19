@@ -123,6 +123,16 @@ function remove(project, rel) {
   invalidate(project);
 }
 
+function rename(project, rel, newRel) {
+  const from = resolveIn(project, rel);
+  const to = resolveIn(project, newRel);
+  if (!fs.existsSync(from)) throw new Error('not found: ' + rel);
+  if (fs.existsSync(to)) throw new Error('already exists: ' + newRel);
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  fs.renameSync(from, to);
+  invalidate(project);
+}
+
 function createProject(name) {
   const id = safeName(name).toLowerCase().replace(/\s+/g, '-');
   const dst = path.join(PROJECTS_DIR, id);
@@ -192,6 +202,6 @@ function search(project, query, opts = {}) {
 }
 
 module.exports = {
-  init, listProjects, fileTree, readFile, writeFile, create, remove,
+  init, listProjects, fileTree, readFile, writeFile, create, remove, rename,
   createProject, apkPath, projectRoot, search, importDir, uniqueProjectId,
 };

@@ -128,6 +128,7 @@ function renderTree() {
   root.className = 'tree-item tree-root';
   root.innerHTML = `<span class="ico">${rootOpen ? '▾' : '▸'}</span><span class="name">📦 ${esc(state.project)}</span>`;
   root.title = state.project;
+  root.dataset.type = 'root';
   root.onclick = () => {
     if (rootOpen) state.expanded.add('__root__'); else state.expanded.delete('__root__');
     persistUI(); renderTree();
@@ -159,6 +160,7 @@ function renderNodes(nodes, key) {
     item.innerHTML = `<span class="ico">${isDir ? (state.expanded.has(n.path) ? '▾' : '▸') : iconFor(n.name)}</span><span class="name">${esc(n.name)}</span>`;
     item.title = n.path + (!isDir && n.size != null ? `  ·  ${fmtSize(n.size)}` : '');
     item.dataset.path = n.path;
+    item.dataset.type = isDir ? 'dir' : 'file';
     if (isDir) {
       item.onclick = () => {
         const open = state.expanded.has(n.path);
@@ -685,13 +687,187 @@ $('btn-restart').onclick = async () => {
   }
 };
 
+/* ---------------- context menus (right-click) ---------------- */
+const ctx = $('ctx-menu');
+
+function showCtxMenu(x, y, items) {
+  ctx.innerHTML = '';
+  for (const it of items) {
+    if (it.sep) { const s = document.createElement('div'); s.className = 'ctx-sep'; ctx.appendChild(s); continue; }
+    const row = document.createElement('div');
+    row.className = 'ctx-item' + (it.danger ? ' danger' : '') + (it.disabled ? ' disabled' : '');
+    row.innerHTML = `<span>${esc(it.label)}</span>${it.hint ? `<span class="ctx-hint">${esc(it.hint)}</span>` : ''}`;
+    if (!it.disabled) row.onclick = () => { hideCtxMenu(); it.action(); };
+    ctx.appendChild(row);
+  }
+  ctx.classList.remove('hidden');
+  const r = ctx.getBoundingClientRect(); // keep the menu inside the viewport
+  if (x + r.width > innerWidth) x = innerWidth - r.width - 6;
+  if (y + r.height > innerHeight) y = innerHeight - r.height - 6;
+  ctx.style.left = x + 'px';
+  ctx.style.top = y + 'px';
+}
+function hideCtxMenu() { ctx.classList.add('hidden'); }
+document.addEventListener('click', hideCtxMenu, true);
+window.addEventListener('blur', hideCtxMenu);
+editor.addEventListener('scroll', hideCtxMenu);
+
+document.addEventListener('contextmenu', (e) => {
+  if (!e.target.closest) return;
+  if (e.target.closest('#file-tree')) { e.preventDefault(); treeCtx(e); }
+  else if (e.target.closest('#editor')) { e.preventDefault(); editorCtx(e); }
+  else if (e.target.closest('.tab')) { e.preventDefault(); tabCtx(e, e.target.closest('.tab')); }
+});
+
+function treeCtx(e) {
+  if (!state.project) return;
+  const item = e.target.closest('.tree-item');
+  const x = e.clientX, y = e.clientY;
+  if (item && item.dataset.type === 'dir') {
+    const dir = item.dataset.path;
+    showCtxMenu(x, y, [
+      { label: '＋ New File here…', action: () => newFileAt(dir, 'file') },
+      { label: '＋ New Folder here…', action: () => newFileAt(dir, 'dir') },
+      { sep: true },
+      { label: 'Rename folder…', action: () => renamePath(dir) },
+      { label: 'Delete folder', danger: true, action: () => deletePath(dir, true) },
+      { sep: true },
+      { label: 'Refresh explorer', action: refreshTree },
+    ]);
+  } else if (item && item.dataset.type === 'file') {
+    const p = item.dataset.path;
+    showCtxMenu(x, y, [
+      { label: 'Open', hint: 'click', action: () => openFile(p) },
+      { sep: true },
+      { label: 'Download this file', action: () => downloadFile(p) },
+      { label: 'Rename…', action: () => renamePath(p) },
+      { label: 'Delete', danger: true, action: () => deletePath(p, false) },
+    ]);
+  } else {
+    showCtxMenu(x, y, [
+      { label: '＋ New File…', action: newFile },
+      { label: '＋ New Folder…', action: newFolderRoot },
+      { label: '＋ New Project…', action: newProject },
+      { sep: true },
+      { label: 'Refresh explorer', action: refreshTree },
+    ]);
+  }
+}
+
+function editorCtx(e) {
+  const t = curTab();
+  if (!t) return;
+  const hasSel = editor.selectionStart !== editor.selectionEnd;
+  showCtxMenu(e.clientX, e.clientY, [
+    { label: 'Save', hint: 'Ctrl+S', disabled: t.readonly, action: saveActive },
+    { sep: true },
+    { label: 'Cut', hint: 'Ctrl+X', disabled: !hasSel || t.readonly, action: () => { editor.focus(); try { document.execCommand('cut'); } catch { insertAtCursor(''); } } },
+    { label: 'Copy', hint: 'Ctrl+C', disabled: !hasSel, action: () => { editor.focus(); try { document.execCommand('copy'); } catch { /* Ctrl+C works anyway */ } } },
+    { label: 'Paste', hint: 'Ctrl+V', disabled: t.readonly, action: pasteFromClipboard },
+    { label: 'Select All', hint: 'Ctrl+A', action: () => { editor.focus(); editor.select(); } },
+    { sep: true },
+    { label: 'Go to Line…', action: () => { const n = prompt(`Line (1–${state.gutterN.toLocaleString()}):`); if (n) gotoLine(Math.max(1, Math.min(parseInt(n, 10) || 1, state.gutterN))); } },
+    { label: '▶ Build APK', disabled: t.readonly, action: build },
+  ]);
+}
+
+async function pasteFromClipboard() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) { editor.focus(); insertAtCursor(text); }
+  } catch {
+    log('<span class="info">Clipboard paste needs browser permission — press Ctrl+V inside the editor instead.</span>');
+  }
+}
+
+function tabCtx(e, tab) {
+  const p = tab.dataset.path;
+  showCtxMenu(e.clientX, e.clientY, [
+    { label: 'Close', danger: true, action: () => closeTab(p) },
+    { label: 'Close Others', action: () => {
+      for (const k of [...state.tabs.keys()]) if (k !== p) state.tabs.delete(k);
+      if (state.tabs.has(p)) openFile(p);
+      else { state.active = null; $('editor-wrap').classList.add('hidden'); $('welcome').classList.remove('hidden'); }
+      renderTabs(); persistUI();
+    } },
+    { sep: true },
+    { label: 'Copy Path', action: async () => {
+      try { await navigator.clipboard.writeText(p); }
+      catch { prompt('Copy the path:', p); }
+    } },
+  ]);
+}
+
+/* ---------------- file operations behind the menus ---------------- */
+async function newFileAt(dir, type) {
+  const name = prompt(type === 'dir' ? `New folder inside ${dir}:` : `New file inside ${dir}:`);
+  if (!name) return;
+  const rel = dir + '/' + name.replace(/^\/+|\/+$/g, '');
+  try {
+    await api('/api/file/new', { body: { project: state.project, path: rel, type } });
+    await refreshTree();
+    if (type === 'file') openFile(rel);
+  } catch (e) { alert(e.message); }
+}
+async function newFolderRoot() {
+  const name = prompt('New folder at project root:');
+  if (!name) return;
+  try {
+    await api('/api/file/new', { body: { project: state.project, path: name.replace(/^\/+|\/+$/g, ''), type: 'dir' } });
+    await refreshTree();
+  } catch (e) { alert(e.message); }
+}
+async function renamePath(p) {
+  const base = p.split('/').pop();
+  const name = prompt('Rename to:', base);
+  if (!name || name === base) return;
+  const np = p.slice(0, p.length - base.length) + name;
+  try {
+    await api('/api/file/rename', { body: { project: state.project, path: p, newPath: np } });
+    // retitle open tabs under the old path (works for files AND folders)
+    for (const [k, t] of [...state.tabs.entries()]) {
+      if (k === p || k.startsWith(p + '/')) {
+        const nk = np + k.slice(p.length);
+        state.tabs.delete(k);
+        state.tabs.set(nk, { ...t, path: nk });
+        if (state.active === k) state.active = nk;
+      }
+    }
+    await refreshTree(); renderTabs(); markTabDirty(); persistUI();
+    log(`<span class="info">Renamed ${esc(p)} → ${esc(np)}</span>`);
+  } catch (e) { alert(e.message); }
+}
+async function deletePath(p, isDir) {
+  if (!confirm(`Delete ${isDir ? 'folder and EVERYTHING inside it' : 'file'}?\n\n${p}\n\n(this cannot be undone)`)) return;
+  try {
+    await api('/api/file/delete', { body: { project: state.project, path: p } });
+    for (const k of [...state.tabs.keys()]) {
+      if (k === p || k.startsWith(p + '/')) { state.tabs.delete(k); if (state.active === k) state.active = null; }
+    }
+    if (!state.active) { $('editor-wrap').classList.add('hidden'); $('welcome').classList.remove('hidden'); hideBanner(); }
+    await refreshTree(); renderTabs(); persistUI();
+    log(`<span class="info">Deleted ${esc(p)}</span>`);
+  } catch (e) { alert(e.message); }
+}
+async function downloadFile(p) {
+  try {
+    const f = await api(`/api/file?project=${encodeURIComponent(state.project)}&path=${encodeURIComponent(p)}`);
+    const blob = new Blob([f.content], { type: 'application/octet-stream' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = p.split('/').pop();
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  } catch (e) { alert(e.message); }
+}
+
 /* ---------------- global shortcuts ---------------- */
 document.addEventListener('keydown', (e) => {
   const mod = e.ctrlKey || e.metaKey;
   if (mod && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); qoOpen(); }
   if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); openSearch(); }
   if (mod && !e.shiftKey && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSidebar(); }
-  if (e.key === 'Escape') { if (qo.open) qoClose(); }
+  if (e.key === 'Escape') { if (qo.open) qoClose(); hideCtxMenu(); }
 });
 
 /* ---------------- sidebar (VS Code style collapse, Ctrl+B) ---------------- */

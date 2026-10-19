@@ -132,6 +132,12 @@ async function handleApi(req, res, u) {
     return send(res, 200, { deleted: rel });
   }
 
+  if (req.method === 'POST' && p === '/api/file/rename') {
+    const { project, path: rel, newPath } = await readJson(req);
+    store.rename(project, rel, String(newPath || ''));
+    return send(res, 200, { renamed: rel, to: newPath });
+  }
+
   if (req.method === 'GET' && p === '/api/search') {
     const out = store.search(q.get('project'), q.get('q') || '', { caseInsensitive: q.get('ci') !== '0' });
     return send(res, 200, out);

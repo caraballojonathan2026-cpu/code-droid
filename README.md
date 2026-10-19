@@ -62,6 +62,7 @@ Check the compiler any time with **`npm test`** (self-test builds the sample twi
 - Unsaved tabs you *close* also keep a draft copy
 
 **Self-contained workflow**
+- **Right-click everywhere** (VS Code style): explorer → new file/folder, rename, delete, download file; editor → save, cut/copy/paste, select all, go-to-line, build; tabs → close / close others / copy path
 - **⇩ Export** — download the whole project as a .zip (build output excluded)
 - **⇧ Import** — drop in a .zip, it becomes a project (name conflicts auto-renamed)
 - **⟳ Restart** — respawn the server from the UI (works because `npm start` runs a tiny supervisor); the page reloads and your work is still there

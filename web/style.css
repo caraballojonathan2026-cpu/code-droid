@@ -197,6 +197,26 @@ body.sidebar-collapsed #sidebar-grip:hover { background: #45484a; }
 .qo-item.sel, .qo-item:hover { background: #0d537a55; }
 .qo-empty { padding: 12px 14px; color: var(--fg-dim); font-size: .82rem; }
 
+/* ---------- context menu (right-click) ---------- */
+#ctx-menu {
+  position: fixed; min-width: 210px; z-index: 80;
+  background: #343637; border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.55); padding: 4px;
+  font-size: .82rem; user-select: none;
+}
+.ctx-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 18px;
+  padding: 4px 12px; border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.ctx-item:hover { background: #04395e; color: #fff; }
+.ctx-item.danger { color: #f48771; }
+.ctx-item.danger:hover { background: #5a1d1d; color: #fff; }
+.ctx-item.disabled { color: #6d6d6d; cursor: default; }
+.ctx-item.disabled:hover { background: transparent; color: #6d6d6d; }
+.ctx-hint { color: var(--fg-dim); font-size: .72rem; }
+.ctx-item:hover .ctx-hint { color: #cfe3f5; }
+.ctx-sep { height: 1px; background: var(--border); margin: 4px 6px; }
+
 /* ---------- help modal ---------- */
 #help-modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 50; }
 #help-card { position: relative; width: min(680px, 92vw); max-height: 85vh; overflow: auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 22px 26px; line-height: 1.6; }
