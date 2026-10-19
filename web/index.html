@@ -123,6 +123,22 @@ npm start               # supervisor + server (the ⟳ button works)</pre>
   </div>
 </div>
 
+<div id="dl-modal" class="hidden">
+  <div id="dl-card">
+    <button id="btn-close-dl">✕</button>
+    <h3 id="dl-title">Download</h3>
+    <div class="dl-row">
+      <button id="btn-dl-direct" class="primary">⬇ Download</button>
+      <button id="btn-dl-newtab">↗ Open in new tab</button>
+    </div>
+    <p class="dl-note">Inside the live-preview iframe, browsers can block downloads. If nothing happens, copy this link and paste it into a new browser tab:</p>
+    <div class="dl-row">
+      <input id="dl-url" readonly>
+      <button id="btn-dl-copy" class="mini">⧉ Copy</button>
+    </div>
+  </div>
+</div>
+
 <div id="ctx-menu" class="hidden"></div>
 
 <script src="kotlin.js"></script>

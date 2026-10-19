@@ -197,6 +197,15 @@ body.sidebar-collapsed #sidebar-grip:hover { background: #45484a; }
 .qo-item.sel, .qo-item:hover { background: #0d537a55; }
 .qo-empty { padding: 12px 14px; color: var(--fg-dim); font-size: .82rem; }
 
+/* ---------- download modal (works around iframe download blocks) ---------- */
+#dl-modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 70; }
+#dl-card { width: min(540px, 92vw); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; position: relative; }
+#dl-card h3 { color: var(--accent); margin-bottom: 6px; font-size: .95rem; overflow: hidden; text-overflow: ellipsis; }
+.dl-row { display: flex; gap: 8px; margin: 10px 0; align-items: center; }
+.dl-note { color: var(--fg-dim); font-size: .78rem; line-height: 1.5; }
+#dl-url { flex: 1; background: var(--bg-input); border: 1px solid var(--border); color: var(--fg); border-radius: 4px; padding: 5px 8px; font-family: var(--mono); font-size: .72rem; }
+#btn-close-dl { position: absolute; top: 10px; right: 10px; }
+
 /* ---------- context menu (right-click) ---------- */
 #ctx-menu {
   position: fixed; min-width: 210px; z-index: 80;

@@ -505,9 +505,11 @@ async function build() {
     }
     if (r.ok) {
       state.built = true;
+      const apkUrl = '/api/apk?project=' + encodeURIComponent(state.project);
       $('btn-apk').classList.remove('hidden');
-      $('btn-apk').href = '/api/apk?project=' + encodeURIComponent(state.project);
+      $('btn-apk').href = apkUrl;
       $('btn-apk').textContent = `⬇ APK (${r.sizeKB} KB)`;
+      $('btn-apk').onclick = (e) => { e.preventDefault(); offerDownload(apkUrl, `${state.project}-debug.apk`); };
       $('build-summary').textContent = `✔ OK in ${(r.totalMs / 1000).toFixed(1)}s — ${r.sizeKB} KB`;
       log(`<span class="apk-line">✔ BUILD SUCCESSFUL in ${(r.totalMs / 1000).toFixed(1)}s — ${esc(r.apk)} (${r.sizeKB} KB)</span>`);
       log(`<span class="info">Install on a real phone (no emulator!):\n  ${esc(r.install.adb)}\n${esc(r.install.manual)}</span>`);
@@ -647,7 +649,7 @@ async function newProject() {
 $('btn-export').onclick = () => {
   if (!state.project) return;
   saveAll().finally(() => {
-    location.href = '/api/project/export?project=' + encodeURIComponent(state.project);
+    offerDownload('/api/project/export?project=' + encodeURIComponent(state.project), state.project + '.zip');
   });
 };
 $('btn-import').onclick = () => $('import-file').click();
@@ -685,6 +687,47 @@ $('btn-restart').onclick = async () => {
   } else {
     log('<span class="err">Server did not come back. If it was started directly (node server/server.js),\nstart it again with: npm start  (uses launcher.js, which makes ⟳ work).</span>');
   }
+};
+
+/* ---------------- download helper (iframe-sandbox-proof) ----------------
+ * Live-preview iframes often block <a download> silently. So the APK/Export
+ * buttons open this panel with three ways out: programmatic download,
+ * open-in-new-tab, and a copy-able absolute URL (which always works). */
+const dl = { url: null, filename: null };
+function offerDownload(url, filename) {
+  dl.url = url; dl.filename = filename;
+  $('dl-title').textContent = '⬇ ' + filename;
+  $('dl-url').value = location.origin + url;
+  $('btn-dl-copy').textContent = '⧉ Copy';
+  $('dl-modal').classList.remove('hidden');
+}
+$('btn-close-dl').onclick = () => $('dl-modal').classList.add('hidden');
+$('dl-modal').onclick = (e) => { if (e.target.id === 'dl-modal') $('dl-modal').classList.add('hidden'); };
+$('btn-dl-direct').onclick = async () => {
+  try {
+    const res = await fetch(dl.url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = dl.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e) {
+    log('<span class="err">Download failed: ' + esc(e.message) + ' — copy the link and paste it in a new tab.</span>');
+  }
+};
+$('btn-dl-newtab').onclick = () => {
+  try { window.open(dl.url, '_blank'); }
+  catch { location.href = dl.url; }
+};
+$('btn-dl-copy').onclick = async () => {
+  const done = (msg) => { $('btn-dl-copy').textContent = msg; setTimeout(() => { $('btn-dl-copy').textContent = '⧉ Copy'; }, 1500); };
+  try { $('dl-url').select(); } catch { /* ignore */ }
+  try { await navigator.clipboard.writeText($('dl-url').value); done('✔ Copied'); }
+  catch { try { document.execCommand('copy'); done('✔ Copied'); } catch { done('press Ctrl+C'); } }
 };
 
 /* ---------------- context menus (right-click) ---------------- */
