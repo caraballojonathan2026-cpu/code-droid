@@ -107,7 +107,7 @@ async function refreshTree() {
   if (!ls.get(`cd.expanded::${state.project}`)) {
     // first sight of this project: small projects open fully, big ones to depth 3
     const dirs = [];
-    (function collect(ns, depth) { for (const n of ns) if (n.type === 'dir') { dirs.push({ p: n.path, d: depth }); collect(n.children || [], depth + 1); } })(tree, 1);
+    (function collect(ns, depth) { for (const n of ns) if (n.type === 'dir') { dirs.push({ p: n.path, d: depth }); collect(n.children || [], depth + 1); } })(state.treeCache.data, 1);
     state.expanded = new Set(dirs.length <= 60 ? dirs.map((x) => x.p) : dirs.filter((x) => x.d <= 3).map((x) => x.p));
   } else {
     try { state.expanded = new Set(JSON.parse(ls.get(`cd.expanded::${state.project}`) || '[]')); } catch { state.expanded = new Set(); }
@@ -741,17 +741,24 @@ $('project-select').onchange = async (e) => {
 
 /* ---------------- boot ---------------- */
 (async function boot() {
-  log('<span class="info">Welcome to code-droid v0.2! The light Android IDE. 🤖<br>New: Ctrl+P quick-open · Ctrl+Shift+F search · drafts auto-saved in your browser · Import/Export .zip · ⟳ restart.</span>');
-  if (ls.get('cd.console') === 'collapsed') $('console-pane').classList.add('collapsed');
-  if (ls.get('cd.sidebar') === 'collapsed') document.body.classList.add('sidebar-collapsed');
-  const savedProject = ls.get('cd.project');
-  await Promise.all([checkTools(), loadProjects(savedProject || undefined)]);
-  // restore tabs & active file
   try {
-    const tabsState = JSON.parse(ls.get(`cd.tabs::${state.project}`) || 'null');
-    if (tabsState && tabsState.open && tabsState.open.length) {
-      for (const p of tabsState.open) { await openFile(p, { silent: true }); }
-      if (tabsState.active && state.tabs.has(tabsState.active)) await openFile(tabsState.active);
-    }
-  } catch { /* fresh start */ }
+    log('<span class="info">Welcome to code-droid! The light Android IDE. 🤖<br>Ctrl+P quick-open · Ctrl+Shift+F search · Ctrl+B explorer · drafts auto-saved in your browser · Import/Export .zip · ⟳ restart.</span>');
+    if (ls.get('cd.console') === 'collapsed') $('console-pane').classList.add('collapsed');
+    if (ls.get('cd.sidebar') === 'collapsed') document.body.classList.add('sidebar-collapsed');
+    const savedProject = ls.get('cd.project');
+    await Promise.all([checkTools(), loadProjects(savedProject || undefined)]);
+    // restore tabs & active file
+    try {
+      const tabsState = JSON.parse(ls.get(`cd.tabs::${state.project}`) || 'null');
+      if (tabsState && tabsState.open && tabsState.open.length) {
+        for (const p of tabsState.open) { await openFile(p, { silent: true }); }
+        if (tabsState.active && state.tabs.has(tabsState.active)) await openFile(tabsState.active);
+      }
+    } catch { /* fresh start */ }
+  } catch (e) {
+    // never fail silently: put startup errors where the user can see them
+    hideBanner();
+    try { $('console-pane').classList.remove('collapsed'); } catch { /* ignore */ }
+    log('<span class="err">⚠ Startup error: ' + esc(e.message) + '\nTry ⟳ Restart, or clear site data (localStorage) if it keeps happening.</span>');
+  }
 })();
