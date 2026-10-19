@@ -101,8 +101,9 @@ async function loadProjects(selectId) {
 
 async function refreshTree() {
   if (!state.project) return;
-  const { tree } = await api('/api/files?project=' + encodeURIComponent(state.project));
-  state.treeCache = { data: tree, ts: Date.now() };
+  const data = await api('/api/files?project=' + encodeURIComponent(state.project));
+  state.treeCache = { data: data.tree, ts: Date.now(), truncated: data.truncated, nodeCount: data.nodeCount };
+  state.dirPages = new Map();
   if (!ls.get(`cd.expanded::${state.project}`)) {
     // first sight of this project: small projects open fully, big ones to depth 3
     const dirs = [];
@@ -132,12 +133,24 @@ function renderTree() {
     persistUI(); renderTree();
   };
   host.appendChild(root);
-  if (rootOpen) host.appendChild(renderNodes(state.treeCache.data));
+  if (rootOpen) {
+    host.appendChild(renderNodes(state.treeCache.data, 'root'));
+    if (state.treeCache.truncated) {
+      const note = document.createElement('div');
+      note.className = 'tree-note';
+      note.textContent = `⚠ explorer truncated at ${state.treeCache.nodeCount.toLocaleString()} items — use Ctrl+P / Ctrl+Shift+F`;
+      host.appendChild(note);
+    }
+  }
 }
 
-function renderNodes(nodes) {
+const DIR_PAGE = 200; // files per folder rendered at a time ("… N more" paging)
+
+function renderNodes(nodes, key) {
   const ul = document.createElement('ul');
-  for (const n of nodes) {
+  const shown = (state.dirPages && state.dirPages.get(key)) || DIR_PAGE;
+  const slice = nodes.length > shown ? nodes.slice(0, shown) : nodes;
+  for (const n of slice) {
     const li = document.createElement('li');
     const isDir = n.type === 'dir';
     if (isDir) li.className = 'tree-dir';
@@ -151,16 +164,28 @@ function renderNodes(nodes) {
         const open = state.expanded.has(n.path);
         const sub = li.querySelector(':scope > ul');
         if (open) { state.expanded.delete(n.path); if (sub) sub.remove(); item.querySelector('.ico').textContent = '▸'; }
-        else { state.expanded.add(n.path); li.appendChild(renderNodes(n.children || [])); item.querySelector('.ico').textContent = '▾'; }
+        else { state.expanded.add(n.path); li.appendChild(renderNodes(n.children || [], n.path)); item.querySelector('.ico').textContent = '▾'; }
         persistUI();
       };
       li.appendChild(item);
-      if (state.expanded.has(n.path)) li.appendChild(renderNodes(n.children || []));
+      if (state.expanded.has(n.path)) li.appendChild(renderNodes(n.children || [], n.path));
     } else {
       item.onclick = () => openFile(n.path);
       li.appendChild(item);
     }
     ul.appendChild(li);
+  }
+  if (nodes.length > shown) {
+    const more = document.createElement('li');
+    const item = document.createElement('div');
+    item.className = 'tree-item tree-more';
+    item.innerHTML = `<span class="ico">…</span><span class="name">${(nodes.length - shown).toLocaleString()} more — click to load</span>`;
+    item.onclick = () => {
+      state.dirPages.set(key, shown + DIR_PAGE * 5);
+      renderTree();
+    };
+    more.appendChild(item);
+    ul.appendChild(more);
   }
   return ul;
 }
@@ -179,6 +204,7 @@ function clearDraft(p) { ls.del(draftKey(p)); }
 /* ---------------- editor ---------------- */
 const editor = $('editor');
 const gutter = $('gutter');
+const gutterInner = $('gutter-inner');
 const hlLayer = $('highlight-layer');
 const hlCode = $('highlight-code');
 const curTab = () => state.tabs.get(state.active);
@@ -219,17 +245,35 @@ function renderEditor() {
   updateFileInfo(src);
 }
 
+/* ---------------- virtualized line-number gutter ----------------
+ * Normal files (<4K lines): full number list, moved with a CSS transform.
+ * Big files: only the visible window is rendered (like the syntax layer). */
+const GUTTER_VIRTUAL_AT = 4000;
 function updateGutter(src) {
   const t = curTab();
   if (!t) return;
-  const n = t.big && t.lines ? t.lines.length : (src.match(/\n/g) || []).length + 1;
-  if (n !== state.gutterN) {
-    const buf = new Array(n);
-    for (let i = 0; i < n; i++) buf[i] = i + 1;
-    gutter.textContent = buf.join('\n');
-    state.gutterN = n;
+  const total = t.big && t.lines ? t.lines.length : (src.match(/\n/g) || []).length + 1;
+  const padTop = 10; // matches editor padding-top
+  if (total <= GUTTER_VIRTUAL_AT) {
+    if (state.gutterN !== total || state.gutterMode !== 'full') {
+      const buf = new Array(total);
+      for (let i = 0; i < total; i++) buf[i] = i + 1;
+      gutterInner.textContent = buf.join('\n');
+      state.gutterN = total; state.gutterMode = 'full'; state.gutterFirst = 0;
+    }
+    gutterInner.style.transform = `translateY(${padTop - editor.scrollTop}px)`;
+  } else {
+    const first = Math.max(0, Math.floor(editor.scrollTop / state.lineH) - 60);
+    const last = Math.min(total - 1, Math.ceil((editor.scrollTop + editor.clientHeight) / state.lineH) + 60);
+    if (state.gutterMode !== 'virt' || first !== state.gutterFirst || total !== state.gutterN || last > state.gutterLast) {
+      const cnt = last - first + 1;
+      const buf = new Array(cnt);
+      for (let i = 0; i < cnt; i++) buf[i] = first + i + 1;
+      gutterInner.textContent = buf.join('\n');
+      state.gutterMode = 'virt'; state.gutterFirst = first; state.gutterN = total; state.gutterLast = last;
+    }
+    gutterInner.style.transform = `translateY(${padTop + state.gutterFirst * state.lineH - editor.scrollTop}px)`;
   }
-  gutter.scrollTop = editor.scrollTop;
 }
 
 function updateFileInfo(src) {
@@ -239,9 +283,9 @@ function updateFileInfo(src) {
 function syncScroll() {
   hlLayer.scrollTop = editor.scrollTop;
   hlLayer.scrollLeft = editor.scrollLeft;
-  gutter.scrollTop = editor.scrollTop;
   const t = curTab();
-  if (t && t.big) requestRender(); // re-highlight the new viewport
+  if (t) updateGutter(editor.value); // keep virtualized gutter aligned
+  if (t && t.big) requestRender();   // re-highlight the new viewport
 }
 
 function updateCursor() {

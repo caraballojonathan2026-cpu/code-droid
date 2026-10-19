@@ -103,6 +103,8 @@ body.sidebar-collapsed #sidebar-grip:hover { background: #45484a; }
 .tree-item .ico { display: inline-block; width: .95em; text-align: center; font-size: .72rem; color: #858a8e; flex: none; }
 .tree-item.active .ico { color: #cfe3f5; }
 .tree-item .name { overflow: hidden; text-overflow: ellipsis; }
+.tree-item.tree-more { color: var(--link); font-style: italic; }
+.tree-note { color: #e8c866; padding: 2px 8px; font-size: .74rem; }
 .tree-item.tree-root {
   padding: 2px 4px; font-weight: 700; color: #dcdcdc;
   text-transform: uppercase; letter-spacing: .04em; font-size: .72rem;
@@ -120,16 +122,18 @@ body.sidebar-collapsed #sidebar-grip:hover { background: #45484a; }
 /* ---------- editor (overlay technique + line-number gutter) ---------- */
 #editor-wrap { flex: 1; position: relative; min-height: 0; }
 #gutter {
-  position: absolute; left: 0; top: 0; bottom: 22px; width: 48px;
-  padding: 10px 6px 10px 0; text-align: right; overflow: hidden;
+  position: absolute; left: 0; top: 0; bottom: 22px; width: 56px;
+  overflow: hidden; user-select: none;
   font-size: 13.5px; line-height: 1.45; color: #606366;
   background: #313335; border-right: 1px solid var(--border);
-  user-select: none;
 }
-#gutter .cur { color: var(--accent); font-weight: 700; }
+#gutter-inner {
+  position: absolute; top: 0; left: 0; right: 0;
+  padding-right: 6px; text-align: right; white-space: pre; will-change: transform;
+}
 #editor, #highlight-layer {
   position: absolute; top: 0; right: 0; bottom: 22px; left: 0;
-  padding: 10px 12px 10px 60px; margin: 0;
+  padding: 10px 12px 10px 68px; margin: 0;
   font-size: 13.5px; line-height: 1.45; tab-size: 4;
   white-space: pre; overflow: auto; word-wrap: normal;
 }

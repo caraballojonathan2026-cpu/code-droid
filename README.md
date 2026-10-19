@@ -26,7 +26,7 @@
 | Rebuild after a change | tens of seconds (task graph, config cache) | **~7 s** warm (stdlib dex is cached) |
 | Test device | bundled x86 emulator (very heavy) | **your real phone** (USB or APK transfer) |
 
-Measured in a **1.9 GB RAM / 2 CPU** sandbox: hello world builds + signs in ~16 s cold, **~7 s** warm; a 41-file app in ~13 s. Numbers live in `npm test`.
+Measured in a **1.9 GB RAM / 2 CPU** sandbox: a **201-file Kotlin app** builds in ~24 s, hello world in ~8 s warm, re-tapping Build with no changes answers **“up to date” in ~3 ms** — and the IDE stays snappy the whole time because builds never freeze the server. Numbers live in `npm test`.
 
 ## Quick start
 
@@ -50,9 +50,10 @@ Check the compiler any time with **`npm test`** (self-test builds the sample twi
 
 **Built for big projects**
 - 🔍 **Ctrl+P** quick-open any file; **Ctrl+Shift+F** project-wide search with clickable results that jump to the exact line
-- Editor uses a *viewport highlighter*: only the visible lines are colorized, so files with 100K+ lines stay smooth; line-number gutter included; >2 MB files open read-only instead of freezing
-- **VS Code-style Explorer**: compact 22px rows, tight indentation, collapsible project root, sizes in tooltips — and **Ctrl+B** hides the whole panel when you need the space
-- **Cached stdlib DEX**: kotlin-stdlib is dexed once ever; rebuilds only dex *your* code (that's why warm builds are ~2× faster)
+- **Instant rebuilds**: an input signature (path+size+mtime of every source) answers “APK up to date” in milliseconds when nothing changed; **builds run async** (the IDE/server never freeze; `kotlinc` and `javac` even run in parallel)
+- **Cached stdlib DEX**: kotlin-stdlib is dexed once ever; rebuilds only dex *your* code
+- Editor uses a *viewport highlighter* + **virtualized line-number gutter**: only visible lines are colorized/numbered, so 500K-line files stay smooth; >2 MB files open read-only, >8 MB are refused
+- **VS Code-style Explorer** that stays fast at 10K+ files: server-side cached tree, lazy render (200 per folder with “… more” paging), collapsible root, sizes in tooltips, **Ctrl+B** to hide it entirely
 - Builds pass *directories* to kotlinc/d8 (not file lists) — no command-length limits on huge projects
 
 **Never lose work**

@@ -18,14 +18,27 @@
 | tree-sitter / TextMate | single-pass regex tokenizer (`kotlin.js`) | no wasm, sub-ms for typical files |
 | React/Vue SPA | vanilla JS + `fetch` | no build step for the IDE itself |
 
-**Scaling the editor (v0.2).** Two regimes, chosen per keystroke by file size:
+**Scaling the editor (v0.2–0.3).** Multiple regimes, chosen per file size:
 
 - *Normal* (< 120 KB): the whole document is re-highlighted per frame — sub-millisecond.
 - *Viewport mode* (≥ 120 KB): the hidden `<pre>` holds the full text, but only the
-  visible window (±150 lines) is passed through the tokenizer; everything else is just
-  HTML-escaped. Because the font is monospace, unstyled text has identical metrics, so
-  scrolling and caret alignment stay pixel-perfect while CPU per keystroke is O(window),
-  not O(file). Line cache invalidates on edit. Files > 2 MB open read-only.
+  visible window (±150 lines) is tokenized; the rest is just HTML-escaped. Monospace
+  metrics stay pixel-perfect while CPU per keystroke is O(window), not O(file).
+- **Virtualized gutter**: files > 4K lines only render the visible line numbers
+  (transform-synced with the textarea), so a 500K-line file never materializes
+  500K DOM nodes. Files > 2 MB open read-only; > 8 MB are refused server-side.
+- **Explorer**: the server caches the computed file tree per project (invalidated on
+  any write API call, capped at 25K nodes); the client lazy-renders folders and pages
+  long directories 200 entries at a time. Ctrl+P and Ctrl+Shift+F are the intended
+  navigation for huge projects.
+
+**Build responsiveness & instant rebuilds (v0.3).** All build steps run via async
+`spawn` — the Node event loop never blocks, so editing, tree browsing and search keep
+working during a 30-second compile. Independent steps run in parallel
+(`kotlinc ‖ javac-R`). Before building, a make-style input signature (path+size+mtime
+over `src/` + toolchain versions) is compared with `.cd-build.json`; identical inputs
+return the existing APK instantly ("up to date", ~3 ms). The Kotlin stdlib dex is
+cached per (jar, minSdk) under `tools/dex-cache`.
 
 **Never losing work.** Every edit is debounced (0.4 s) into `localStorage` as
 `{content, diskMtime, timestamp}` keyed per file. On open: matching mtime ⇒ restore the

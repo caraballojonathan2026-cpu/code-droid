@@ -25,8 +25,9 @@ const ok = (cond, label) => {
 
 console.log('code-droid self-test\n====================\n');
 
+(async () => {
 // 1) toolchain
-console.log('[1/4] Toolchain discovery');
+console.log('[1/5] Toolchain discovery');
 const tools = discoverTools();
 ok(tools.ready, 'toolchain ready' + (tools.ready ? '' : ' — missing: ' + tools.missing.join(', ')));
 if (!tools.ready) {
@@ -42,8 +43,8 @@ if (!fs.existsSync(PROJECT)) {
 ok(fs.existsSync(path.join(PROJECT, 'app/src/main/AndroidManifest.xml')), 'hello-droid sample project present');
 
 // 2) first build (cold dex cache is fine)
-console.log('\n[2/4] Build #1 — full pipeline');
-let r = buildProject(PROJECT, discoverTools());
+console.log('\n[2/5] Build #1 — full pipeline');
+let r = await buildProject(PROJECT, discoverTools());
 for (const s of r.steps) console.log(`     ${s.ok ? '✔' : '✖'} ${s.name} (${s.ms}ms)`);
 ok(r.ok, 'BUILD #1 SUCCESSFUL in ' + (r.totalMs / 1000).toFixed(1) + 's');
 const apk = path.join(PROJECT, 'build', 'app-debug.apk');
@@ -55,15 +56,23 @@ if (fs.existsSync(apk)) {
 const verifyStep = r.steps.find((s) => s.name === 'verify');
 ok(verifyStep && verifyStep.ok, 'apksigner verify passed (APK is properly signed)');
 
-// 3) second build must hit the dex cache
-console.log('\n[3/4] Build #2 — dex cache warm');
-r = buildProject(PROJECT, discoverTools());
-ok(r.ok, 'BUILD #2 SUCCESSFUL in ' + (r.totalMs / 1000).toFixed(1) + 's');
+// 3) unchanged build must be served instantly from the input-signature cache
+console.log('\n[3/5] Build #2 — unchanged inputs');
+r = await buildProject(PROJECT, discoverTools());
+ok(r.ok && r.upToDate === true, 'BUILD #2 skipped (APK up to date) in ' + r.totalMs + 'ms');
+
+// 4) after touching a source, rebuild hits the dex cache
+console.log('\n[4/5] Build #3 — one file changed');
+const mainKt = path.join(PROJECT, 'app/src/main/java/com/example/hellodroid/MainActivity.kt');
+const now = new Date();
+fs.utimesSync(mainKt, now, now); // mtime bump => signature changes => real rebuild
+r = await buildProject(PROJECT, discoverTools());
+ok(r.ok && !r.upToDate, 'BUILD #3 SUCCESSFUL in ' + (r.totalMs / 1000).toFixed(1) + 's');
 const cached = r.steps.find((s) => s.name.startsWith('d8 (kotlin-stdlib)') && /cached/.test(s.log || ''));
 ok(!!cached, 'kotlin-stdlib dex served from cache (0ms)');
 
-// 4) APK contents sanity
-console.log('\n[4/4] APK structure');
+// 5) APK contents sanity
+console.log('\n[5/5] APK structure');
 const buf = fs.readFileSync(apk);
 ok(buf.slice(0, 2).toString() === 'PK', 'APK is a valid zip/JAR container');
 ok(buf.includes('AndroidManifest.xml'), 'contains AndroidManifest.xml');
@@ -76,3 +85,4 @@ if (failures) {
   process.exit(1);
 }
 console.log('✔ ALL CHECKS PASSED — the compiler works. 🎉');
+})().catch((e) => { console.error('✖ SELF-TEST CRASHED:', e); process.exit(1); });

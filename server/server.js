@@ -105,7 +105,8 @@ async function handleApi(req, res, u) {
   }
 
   if (req.method === 'GET' && p === '/api/files') {
-    return send(res, 200, { tree: store.fileTree(q.get('project')) });
+    const { tree, truncated, nodeCount } = store.fileTree(q.get('project'));
+    return send(res, 200, { tree, truncated, nodeCount });
   }
 
   if (req.method === 'GET' && p === '/api/file') {
@@ -175,7 +176,7 @@ async function handleApi(req, res, u) {
     const { project } = await readJson(req);
     buildRunning = true;
     try {
-      const result = buildProject(store.projectRoot(project), discoverTools());
+      const result = await buildProject(store.projectRoot(project), discoverTools());
       return send(res, result.ok ? 200 : 500, result);
     } finally {
       buildRunning = false;

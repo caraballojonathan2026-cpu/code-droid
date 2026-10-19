@@ -10,6 +10,14 @@ const path = require('path');
 let PROJECTS_DIR = null;
 let TEMPLATES_DIR = null;
 
+/* Server-side tree cache: the file tree of a big project can have 10K+ nodes,
+ * so we compute it once and only recompute after an actual write through the
+ * API (all mutations go through this module). */
+const treeCache = new Map(); // project -> {tree, truncated, nodeCount}
+const NODE_CAP = 25000;      // safety bound so a pathological tree can't OOM us
+
+function invalidate(project) { treeCache.delete(project); }
+
 function init({ projectsDir, templatesDir }) {
   PROJECTS_DIR = projectsDir;
   TEMPLATES_DIR = templatesDir;
@@ -59,14 +67,21 @@ function listProjects() {
 }
 
 function fileTree(project) {
+  const cached = treeCache.get(project);
+  if (cached) return cached;
   const root = projectRoot(project);
+  let nodeCount = 0;
+  let truncated = false;
   function node(dir, relBase) {
     const out = [];
     for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => (b.isDirectory() - a.isDirectory()) || a.name.localeCompare(b.name))) {
       if (e.name === 'build' || e.name.startsWith('.')) continue;
       const rel = relBase ? relBase + '/' + e.name : e.name;
-      if (e.isDirectory()) out.push({ name: e.name, path: rel, type: 'dir', children: node(path.join(dir, e.name), rel) });
-      else {
+      if (e.isDirectory()) {
+        if (++nodeCount > NODE_CAP) { truncated = true; continue; }
+        out.push({ name: e.name, path: rel, type: 'dir', children: node(path.join(dir, e.name), rel) });
+      } else {
+        if (++nodeCount > NODE_CAP) { truncated = true; continue; }
         let size = 0;
         try { size = fs.statSync(path.join(dir, e.name)).size; } catch {}
         out.push({ name: e.name, path: rel, type: 'file', size });
@@ -74,12 +89,16 @@ function fileTree(project) {
     }
     return out;
   }
-  return node(root, '');
+  const result = { tree: node(root, ''), truncated, nodeCount };
+  treeCache.set(project, result);
+  return result;
 }
 
+const MAX_OPEN_SIZE = 8 * 1024 * 1024; // never slurp more than 8MB into the editor
 function readFile(project, rel) {
   const p = resolveIn(project, rel);
   const st = fs.statSync(p);
+  if (st.size > MAX_OPEN_SIZE) throw new Error(`file too large to open (${Math.round(st.size / 1048576)}MB > 8MB limit)`);
   return { content: fs.readFileSync(p, 'utf8'), mtime: st.mtimeMs, size: st.size };
 }
 
@@ -87,6 +106,7 @@ function writeFile(project, rel, content) {
   const p = resolveIn(project, rel);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, content);
+  invalidate(project);
   return fs.statSync(p).mtimeMs;
 }
 
@@ -95,10 +115,12 @@ function create(project, rel, type) {
   if (fs.existsSync(p)) throw new Error('already exists: ' + rel);
   if (type === 'dir') fs.mkdirSync(p, { recursive: true });
   else { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, ''); }
+  invalidate(project);
 }
 
 function remove(project, rel) {
   fs.rmSync(resolveIn(project, rel), { recursive: true, force: true });
+  invalidate(project);
 }
 
 function createProject(name) {
@@ -106,6 +128,7 @@ function createProject(name) {
   const dst = path.join(PROJECTS_DIR, id);
   if (fs.existsSync(dst)) throw new Error('project already exists: ' + id);
   copyDir(path.join(TEMPLATES_DIR, 'hello'), dst);
+  invalidate(id);
   return { id, name };
 }
 
