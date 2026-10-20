@@ -7,6 +7,7 @@ tools/*.zip
 
 # Build outputs
 projects/*/build/
+projects/*/.cd-build.json
 releases/
 
 # OS / editor

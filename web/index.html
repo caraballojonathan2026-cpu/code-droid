@@ -9,7 +9,7 @@
 </head>
 <body>
 <header id="topbar">
-  <div id="brand"><span class="logo">🤖</span> code-droid <span class="tag">the light Android IDE</span></div>
+  <div id="brand"><span class="logo">🤖</span> code-droid <span id="brand-ver"></span> <span class="tag">the light Android IDE</span></div>
   <div id="topbar-right">
     <span id="tool-status" class="badge unknown" title="Toolchain status">checking tools…</span>
     <select id="project-select" title="Project"></select>
@@ -18,10 +18,12 @@
     <button id="btn-save" title="Save (Ctrl+S)">💾 Save</button>
     <button id="btn-build" class="primary" title="Compile to APK">▶ Build APK</button>
     <a id="btn-apk" class="button hidden" title="Download APK" download>⬇ APK</a>
+    <button id="btn-commit" title="Commit project changes (like GitHub)">⎇ Commit</button>
     <span class="bar-sep"></span>
     <button id="btn-import" title="Import a project from a .zip">⇧ Import</button>
     <button id="btn-export" title="Export this project as a .zip">⇩ Export</button>
     <button id="btn-restart" title="Restart the code-droid server">⟳</button>
+    <button id="btn-file-ops" title="Create / delete files (paths with /)">📄±</button>
     <button id="btn-help" title="Help & shortcuts">?</button>
   </div>
 </header>
@@ -135,6 +137,34 @@ npm start               # supervisor + server (the ⟳ button works)</pre>
     <div class="dl-row">
       <input id="dl-url" readonly>
       <button id="btn-dl-copy" class="mini">⧉ Copy</button>
+    </div>
+  </div>
+</div>
+
+<div id="fileops-modal" class="hidden">
+  <div class="modal-card">
+    <button class="modal-x" id="btn-close-fileops">✕</button>
+    <h3>📄± Create or delete files</h3>
+    <p class="dim">Full path with <b>/</b> slashes inside the project — missing folders in between are created automatically. Delete removes a file or a whole folder.</p>
+    <input id="fileops-input" type="text" placeholder="app/src/main/java/com/example/hellodroid/Utils.kt" spellcheck="false">
+    <div class="modal-actions">
+      <button id="btn-fo-create-file" class="primary">＋ Create file</button>
+      <button id="btn-fo-create-dir">＋ Create folder</button>
+      <button id="btn-fo-delete" class="danger-btn">🗑 Delete</button>
+    </div>
+  </div>
+</div>
+
+<div id="commit-modal" class="hidden">
+  <div class="modal-card">
+    <button class="modal-x" id="btn-close-commit">✕</button>
+    <h3>⎇ Commit changes</h3>
+    <div id="commit-branch" class="dim"></div>
+    <div id="commit-files"></div>
+    <input id="commit-msg" type="text" placeholder="Commit message (required)" spellcheck="false">
+    <textarea id="commit-desc" placeholder="Optional extended description…" spellcheck="false"></textarea>
+    <div class="modal-actions">
+      <button id="btn-do-commit" class="primary">⎇ Commit</button>
     </div>
   </div>
 </div>

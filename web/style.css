@@ -197,6 +197,32 @@ body.sidebar-collapsed #sidebar-grip:hover { background: #45484a; }
 .qo-item.sel, .qo-item:hover { background: #0d537a55; }
 .qo-empty { padding: 12px 14px; color: var(--fg-dim); font-size: .82rem; }
 
+/* ---------- generic modal cards (file-ops, commit) ---------- */
+#fileops-modal, #commit-modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 70; }
+.modal-card { width: min(560px, 92vw); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; position: relative; }
+.modal-card h3 { color: var(--accent); margin-bottom: 6px; font-size: .95rem; }
+.modal-x { position: absolute; top: 10px; right: 10px; }
+.modal-card .dim { color: var(--fg-dim); font-size: .78rem; line-height: 1.5; }
+.modal-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+#fileops-input, #commit-msg, #commit-desc {
+  width: 100%; background: var(--bg-input); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 7px 10px; font-family: var(--mono); font-size: .82rem; margin-top: 10px;
+}
+#fileops-input:focus, #commit-msg:focus, #commit-desc:focus { border-color: var(--accent); outline: none; }
+#commit-desc { min-height: 64px; resize: vertical; font-family: inherit; }
+.danger-btn { border-color: #8a3434; color: #f48771; }
+.danger-btn:hover { background: #5a1d1d; color: #fff; }
+#btn-commit { border-color: var(--accent-dim); color: var(--accent); }
+#commit-branch { font-size: .78rem; margin-bottom: 6px; }
+#commit-files { max-height: 170px; overflow: auto; background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin: 8px 0; font-size: .78rem; }
+.commit-file { font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.commit-file .st { display: inline-block; width: 2.4em; color: var(--ann); font-weight: 700; }
+.commit-file .st.st-D { color: var(--err); }
+.commit-file .st.st-M { color: var(--num); }
+.modal-actions button.primary:disabled { opacity: .45; cursor: not-allowed; }
+#brand-ver { font-size: .62rem; color: var(--fg-dim); font-weight: 400; letter-spacing: 0; }
+
 /* ---------- download modal (works around iframe download blocks) ---------- */
 #dl-modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 70; }
 #dl-card { width: min(540px, 92vw); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; position: relative; }

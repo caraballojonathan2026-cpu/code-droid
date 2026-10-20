@@ -19,6 +19,8 @@ const { URL } = require('url');
 
 const { discoverTools } = require('./toolchain');
 const { buildProject } = require('./builder');
+const git = require('./git');
+const pkg = require('../package.json');
 const store = require('./store');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -94,7 +96,7 @@ async function handleApi(req, res, u) {
   const p = u.pathname;
   const q = u.searchParams;
 
-  if (req.method === 'GET' && p === '/api/health') return send(res, 200, { ok: true, name: 'code-droid' });
+  if (req.method === 'GET' && p === '/api/health') return send(res, 200, { ok: true, name: 'code-droid', version: pkg.version });
 
   if (req.method === 'GET' && p === '/api/tools') return send(res, 200, discoverTools());
 
@@ -142,6 +144,20 @@ async function handleApi(req, res, u) {
   if (req.method === 'GET' && p === '/api/search') {
     const out = store.search(q.get('project'), q.get('q') || '', { caseInsensitive: q.get('ci') !== '0' });
     return send(res, 200, out);
+  }
+
+  // ---- git (commit button) ----
+  if (req.method === 'GET' && p === '/api/git/status') {
+    const project = q.get('project');
+    store.projectRoot(project); // validates it exists
+    return send(res, 200, git.status(ROOT, project));
+  }
+
+  if (req.method === 'POST' && p === '/api/git/commit') {
+    const { project, message, description } = await readJson(req);
+    store.projectRoot(project); // validates it exists
+    const r = git.commit(ROOT, project, message, description);
+    return send(res, r.ok ? 200 : 400, r);
   }
 
   // ---- import / export ----

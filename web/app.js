@@ -84,6 +84,8 @@ async function checkTools() {
 
 /* ---------------- projects & lazy file tree ---------------- */
 async function loadProjects(selectId) {
+  // show the running version next to the logo so it's obvious which build you're on
+  api('/api/health').then((h) => { if (h && h.version) $('brand-ver').textContent = 'v' + h.version; }).catch(() => {});
   const { projects } = await api('/api/projects');
   const sel = $('project-select');
   sel.innerHTML = '';
@@ -911,7 +913,7 @@ document.addEventListener('keydown', (e) => {
   if (mod && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); qoOpen(); }
   if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); openSearch(); }
   if (mod && !e.shiftKey && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSidebar(); }
-  if (e.key === 'Escape') { if (qo.open) qoClose(); hideCtxMenu(); }
+  if (e.key === 'Escape') { if (qo.open) qoClose(); hideCtxMenu(); closeFileOps(); $('commit-modal').classList.add('hidden'); }
 });
 
 /* ---------------- sidebar (VS Code style collapse, Ctrl+B) ---------------- */
@@ -941,6 +943,123 @@ $('btn-toggle-console').onclick = () => {
   ls.set('cd.console', $('console-pane').classList.contains('collapsed') ? 'collapsed' : 'open');
 };
 $('btn-clear-console').onclick = () => { $('console').innerHTML = ''; };
+
+/* ---------------- file ops dialog (create/delete with "/" paths) ---------------- */
+function openFileOps() {
+  if (!state.project) return;
+  const base = state.active ? state.active.split('/').slice(0, -1).join('/') + '/' : 'app/src/main/java/';
+  $('fileops-input').value = base;
+  $('fileops-modal').classList.remove('hidden');
+  setTimeout(() => { const i = $('fileops-input'); i.focus(); i.selectionStart = i.selectionEnd = i.value.length; }, 0);
+}
+function closeFileOps() { $('fileops-modal').classList.add('hidden'); }
+async function fileOp(kind) {
+  let rel = $('fileops-input').value.trim().replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!rel) return;
+  try {
+    if (kind === 'delete') {
+      if (!confirm(`Delete?\n\n${rel}\n\nIf it's a folder, EVERYTHING inside goes too. Cannot be undone.`)) return;
+      await api('/api/file/delete', { body: { project: state.project, path: rel } });
+      for (const k of [...state.tabs.keys()]) {
+        if (k === rel || k.startsWith(rel + '/')) { state.tabs.delete(k); if (state.active === k) state.active = null; }
+      }
+      if (!state.active) { $('editor-wrap').classList.add('hidden'); $('welcome').classList.remove('hidden'); hideBanner(); }
+      log(`<span class="info">🗑 Deleted <b>${esc(rel)}</b></span>`);
+    } else {
+      await api('/api/file/new', { body: { project: state.project, path: rel, type: kind === 'dir' ? 'dir' : 'file' } });
+      log(`<span class="info">＋ Created ${kind === 'dir' ? 'folder' : 'file'} <b>${esc(rel)}</b></span>`);
+      if (kind !== 'dir') openFile(rel);
+    }
+    closeFileOps();
+    await refreshTree();
+  } catch (e) { alert(e.message); }
+}
+$('btn-file-ops').onclick = openFileOps;
+$('btn-close-fileops').onclick = closeFileOps;
+$('fileops-modal').onclick = (e) => { if (e.target.id === 'fileops-modal') closeFileOps(); };
+$('btn-fo-create-file').onclick = () => fileOp('file');
+$('btn-fo-create-dir').onclick = () => fileOp('dir');
+$('btn-fo-delete').onclick = () => fileOp('delete');
+$('fileops-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') fileOp('file'); if (e.key === 'Escape') closeFileOps(); });
+
+/* ---------------- commit dialog (GitHub-style) ---------------- */
+let gitChangesCount = 0;
+async function openCommit() {
+  if (!state.project) return;
+  $('commit-modal').classList.remove('hidden');
+  $('commit-msg').value = ''; $('commit-desc').value = '';
+  $('commit-branch').textContent = 'checking git status…';
+  $('commit-files').innerHTML = '<div class="dim">…</div>';
+  try {
+    const s = await api('/api/git/status?project=' + encodeURIComponent(state.project));
+    $('commit-branch').textContent = s.inRepo
+      ? `branch: ${s.branch} · ${s.changes.length} change(s) in projects/${state.project}/`
+      : 'not a git repo yet — committing will run `git init` and make the first commit';
+    renderCommitFiles(s);
+  } catch (e) {
+    $('commit-branch').textContent = 'git unavailable';
+    $('commit-files').innerHTML = '<div class="dim">' + esc(e.message) + '</div>';
+    gitChangesCount = 0;
+  }
+  validateCommit();
+  setTimeout(() => $('commit-msg').focus(), 0);
+}
+function renderCommitFiles(s) {
+  const host = $('commit-files');
+  host.innerHTML = '';
+  if (!s.inRepo) {
+    gitChangesCount = 1;
+    host.innerHTML = '<div class="dim">Everything in the project becomes the first commit.</div>';
+    return;
+  }
+  gitChangesCount = s.changes.length;
+  if (!s.changes.length) {
+    host.innerHTML = '<div class="dim">Working tree clean — nothing to commit for this project.</div>';
+    return;
+  }
+  for (const c of s.changes.slice(0, 200)) {
+    const d = document.createElement('div');
+    d.className = 'commit-file';
+    const rel = c.path.replace(`projects/${state.project}/`, '');
+    d.innerHTML = `<span class="st st-${esc(c.status[0] || '?')}">${esc(c.status)}</span>${esc(rel)}`;
+    host.appendChild(d);
+  }
+  if (s.changes.length > 200) {
+    const d = document.createElement('div');
+    d.className = 'commit-file';
+    d.textContent = `… and ${s.changes.length - 200} more`;
+    host.appendChild(d);
+  }
+}
+function validateCommit() {
+  $('btn-do-commit').disabled = !(gitChangesCount > 0 && $('commit-msg').value.trim().length > 0);
+}
+$('btn-commit').onclick = openCommit;
+$('btn-close-commit').onclick = () => $('commit-modal').classList.add('hidden');
+$('commit-modal').onclick = (e) => { if (e.target.id === 'commit-modal') $('commit-modal').classList.add('hidden'); };
+$('commit-msg').addEventListener('input', validateCommit);
+$('commit-msg').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('btn-do-commit').disabled) $('btn-do-commit').click(); });
+$('btn-do-commit').onclick = async () => {
+  const message = $('commit-msg').value.trim();
+  if (!message) return;
+  $('btn-do-commit').disabled = true;
+  $('btn-do-commit').textContent = '⏳ Committing…';
+  try {
+    await saveAll(); // commit what's on screen, drafts included
+    const r = await api('/api/git/commit', {
+      body: { project: state.project, message, description: $('commit-desc').value.trim() },
+    });
+    $('commit-modal').classList.add('hidden');
+    log(`<span class="apk-line">⎇ Commit <b>${esc(r.hash)}</b> on <b>${esc(r.branch)}</b> — “${esc(message)}”</span>`);
+    if (r.repoCreated) log('<span class="info">(also ran git init — this is the first commit)</span>');
+  } catch (e) {
+    log('<span class="err">Commit failed: ' + esc(e.message) + '</span>');
+    alert('Commit failed: ' + e.message);
+  } finally {
+    $('btn-do-commit').textContent = '⎇ Commit';
+    validateCommit();
+  }
+};
 
 /* ---------------- wire up ---------------- */
 $('btn-build').onclick = build;
