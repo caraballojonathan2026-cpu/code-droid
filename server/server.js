@@ -25,6 +25,7 @@ const ROOT = path.resolve(__dirname, '..');
 const WEB_DIR = path.join(ROOT, 'web');
 const PROJECTS_DIR = path.join(ROOT, 'projects');
 const TEMPLATES_DIR = path.join(ROOT, 'templates');
+const RELEASES_DIR = path.join(ROOT, 'releases');
 const RESTART_CODE = 75; // honored by launcher.js
 
 const PORT = Number(process.env.PORT || 3000);
@@ -213,6 +214,19 @@ const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
     if (u.pathname.startsWith('/api/')) return await handleApi(req, res, u);
+    if (u.pathname.startsWith('/releases/')) {
+      // built APKs, downloadable as attachments
+      const rel = decodeURIComponent(u.pathname.slice('/releases/'.length));
+      const file = path.normalize(path.join(RELEASES_DIR, rel));
+      if (!file.startsWith(RELEASES_DIR)) return send(res, 403, { error: 'forbidden' });
+      return fs.readFile(file, (err, buf) => {
+        if (err) return send(res, 404, { error: 'not found — build something first' });
+        send(res, 200, buf, {
+          'Content-Type': MIME['.apk'],
+          'Content-Disposition': `attachment; filename="${path.basename(file)}"`,
+        });
+      });
+    }
     return serveStatic(res, u.pathname);
   } catch (e) {
     return send(res, 400, { error: e.message });

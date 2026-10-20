@@ -28,6 +28,11 @@ const { spawn } = require('child_process');
 
 const MAX_LOG = 1024 * 1024; // keep at most the last 1MB of a tool's output
 
+/* repo root relative to projects/<name>/ */
+const repoRootOf = (projectRoot) => path.resolve(path.dirname(projectRoot), '..');
+const releaseFileFor = (projectRoot) =>
+  path.join(repoRootOf(projectRoot), 'releases', `${path.basename(projectRoot)}-debug.apk`);
+
 function run(name, cmd, args, opts = {}) {
   return new Promise((resolve) => {
     const t0 = Date.now();
@@ -165,6 +170,8 @@ async function buildProject(projectRoot, toolsInfo) {
     const ms = Date.now() - t0;
     return {
       ok: true, upToDate: true, apk: 'build/app-debug.apk',
+      release: fs.existsSync(releaseFileFor(projectRoot))
+        ? `releases/${path.basename(releaseFileFor(projectRoot))}` : null,
       sizeKB: Math.round(fs.statSync(finalApk).size / 1024), totalMs: ms,
       steps: [{ name: `inputs check (${fileCount} files)`, ok: true, ms, log: 'No changes since the last build — APK is up to date ✔' }],
       install: install(),
@@ -248,9 +255,21 @@ async function buildProject(projectRoot, toolsInfo) {
   // remember the signature for next time
   try { fs.writeFileSync(sigFile, JSON.stringify({ sig, at: new Date().toISOString(), fileCount })); } catch { /* non-fatal */ }
 
+  // ALSO surface the APK outside build/ — some environments (cloud workspaces,
+  // sandboxed previews) can't see/offer files under build/. releases/ is a
+  // normal visible folder, so the artifact is always grabbable.
+  let release = null;
+  try {
+    const dest = releaseFileFor(projectRoot);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(finalApk, dest);
+    release = 'releases/' + path.basename(dest);
+  } catch { /* best-effort */ }
+
   return {
     ok: true,
     apk: 'build/app-debug.apk',
+    release,
     sizeKB: Math.round(fs.statSync(finalApk).size / 1024),
     totalMs: steps.reduce((a, s) => a + s.ms, 0),
     steps,
