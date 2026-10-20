@@ -42,8 +42,11 @@ if (!fs.existsSync(PROJECT)) {
 }
 ok(fs.existsSync(path.join(PROJECT, 'app/src/main/AndroidManifest.xml')), 'hello-droid sample project present');
 
-// 2) first build (cold dex cache is fine)
+// 2) first build — force a full run even if a previous session left things up to date
 console.log('\n[2/5] Build #1 — full pipeline');
+const mainKt = path.join(PROJECT, 'app/src/main/java/com/example/hellodroid/MainActivity.kt');
+const bump = new Date();
+fs.utimesSync(mainKt, bump, bump); // mtime change => signature changes => full pipeline guaranteed
 let r = await buildProject(PROJECT, discoverTools());
 for (const s of r.steps) console.log(`     ${s.ok ? '✔' : '✖'} ${s.name} (${s.ms}ms)`);
 ok(r.ok, 'BUILD #1 SUCCESSFUL in ' + (r.totalMs / 1000).toFixed(1) + 's');
@@ -63,9 +66,8 @@ ok(r.ok && r.upToDate === true, 'BUILD #2 skipped (APK up to date) in ' + r.tota
 
 // 4) after touching a source, rebuild hits the dex cache
 console.log('\n[4/5] Build #3 — one file changed');
-const mainKt = path.join(PROJECT, 'app/src/main/java/com/example/hellodroid/MainActivity.kt');
-const now = new Date();
-fs.utimesSync(mainKt, now, now); // mtime bump => signature changes => real rebuild
+const now2 = new Date();
+fs.utimesSync(mainKt, now2, now2); // mtime bump => signature changes => real rebuild
 r = await buildProject(PROJECT, discoverTools());
 ok(r.ok && !r.upToDate, 'BUILD #3 SUCCESSFUL in ' + (r.totalMs / 1000).toFixed(1) + 's');
 const cached = r.steps.find((s) => s.name.startsWith('d8 (kotlin-stdlib)') && /cached/.test(s.log || ''));
