@@ -49,6 +49,21 @@ store.init({ projectsDir: PROJECTS_DIR, templatesDir: TEMPLATES_DIR });
 
 let buildRunning = false; // single-flight: one build at a time (low-RAM machines!)
 
+/* CORS: lets the IDE hosted elsewhere (e.g. GitHub Pages) drive a server
+ * running on the user's own machine — builds stay local, the browser page
+ * is just the remote control. Includes the Private-Network-Access header
+ * Chromium requires for public-page -> localhost/LAN requests.
+ * Applied via res.setHeader() up front, so every send() below inherits it. */
+function corsHeaders(req) {
+  return {
+    'Access-Control-Allow-Origin': req.headers.origin || '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Private-Network': 'true',
+    'Vary': 'Origin',
+  };
+}
+
 function send(res, status, data, headers = {}) {
   const isObj = typeof data === 'object' && !(data instanceof Buffer);
   const body = isObj ? JSON.stringify(data, null, 2) : data;
@@ -227,6 +242,11 @@ async function handleApi(req, res, u) {
 }
 
 const server = http.createServer(async (req, res) => {
+  for (const [k, v] of Object.entries(corsHeaders(req))) res.setHeader(k, v);
+  if (req.method === 'OPTIONS') { // CORS / Private-Network preflight
+    res.writeHead(204);
+    return res.end();
+  }
   const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
     if (u.pathname.startsWith('/api/')) return await handleApi(req, res, u);

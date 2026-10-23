@@ -1,6 +1,6 @@
 {
   "name": "code-droid",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "A featherweight, web-based Android IDE. Kotlin in, APK out. Runs on a 4GB-RAM machine. No Android Studio, no Gradle, no emulator.",
   "main": "server/launcher.js",
   "scripts": {

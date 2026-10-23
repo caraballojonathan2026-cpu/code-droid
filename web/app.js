@@ -43,9 +43,10 @@ const fmtTime = (t) => new Date(t).toLocaleTimeString();
  * web/static-files.json, persists edits in localStorage, and gives
  * server-only features (build, git, import/export, restart) a clear message. */
 let CD_STATIC = false;
+let API_BASE = ''; // '' = same origin; else e.g. http://localhost:3000 (a server on the user's own machine)
 async function api(path, opts = {}) {
   if (CD_STATIC) return staticApi(path, opts);
-  const res = await fetch(path, opts.body ? {
+  const res = await fetch(API_BASE + path, opts.body ? {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opts.body),
   } : {});
   const data = await res.json().catch(() => ({}));
@@ -631,7 +632,7 @@ async function build() {
     }
     if (r.ok) {
       state.built = true;
-      const apkUrl = '/api/apk?project=' + encodeURIComponent(state.project);
+      const apkUrl = API_BASE + '/api/apk?project=' + encodeURIComponent(state.project);
       $('btn-apk').classList.remove('hidden');
       $('btn-apk').href = apkUrl;
       $('btn-apk').textContent = `⬇ APK (${r.sizeKB} KB)`;
@@ -777,7 +778,7 @@ $('btn-export').onclick = () => {
   if (CD_STATIC) { log('<span class="info">Export needs the code-droid server (static demo mode).</span>'); return; }
   if (!state.project) return;
   saveAll().finally(() => {
-    offerDownload('/api/project/export?project=' + encodeURIComponent(state.project), state.project + '.zip');
+    offerDownload(API_BASE + '/api/project/export?project=' + encodeURIComponent(state.project), state.project + '.zip');
   });
 };
 $('btn-import').onclick = () => $('import-file').click();
@@ -788,7 +789,7 @@ $('import-file').addEventListener('change', async (e) => {
   if (CD_STATIC) { log('<span class="err">Import needs the code-droid server (static demo mode).</span>'); return; }
   log(`<span class="info">⇧ Importing ${esc(f.name)} (${fmtSize(f.size)})…</span>`);
   try {
-    const res = await fetch('/api/project/import?name=' + encodeURIComponent(f.name.replace(/\.zip$/i, '')), {
+    const res = await fetch(API_BASE + '/api/project/import?name=' + encodeURIComponent(f.name.replace(/\.zip$/i, '')), {
       method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: f,
     });
     const d = await res.json();
@@ -804,18 +805,37 @@ $('btn-restart').onclick = async () => {
   stashActive();
   if (state.active && curTab().dirty) saveDraft(state.active, editor.value, curTab().mtime);
   persistUI();
-  try { await fetch('/api/restart', { method: 'POST' }); } catch { /* server already gone */ }
+  try { await fetch(API_BASE + '/api/restart', { method: 'POST' }); } catch { /* server already gone */ }
   log('<span class="info">⟳ Restarting server…</span>');
   let back = false;
   for (let i = 0; i < 40; i++) {
     await sleep(500);
-    try { const r = await fetch('/api/health'); if (r.ok) { back = true; break; } } catch { /* down */ }
+    try { const r = await fetch(API_BASE + '/api/health'); if (r.ok) { back = true; break; } } catch { /* down */ }
   }
   if (back) {
     log('<span class="step-ok">✔ Server is back — reloading the IDE (your work is restored from localStorage).</span>');
     setTimeout(() => location.reload(), 700);
   } else {
     log('<span class="err">Server did not come back. If it was started directly (node server/server.js),\nstart it again with: npm start  (uses launcher.js, which makes ⟳ work).</span>');
+  }
+};
+
+/* ---------------- connect to a local server (🔌) ----------------
+ * The hosted page (GitHub Pages) can drive a code-droid server running on
+ * the user's own machine: builds compile there, APKs download here. */
+$('btn-connect').onclick = async () => {
+  const cur = ls.get('cd.server') || 'http://localhost:3000';
+  const url = prompt('code-droid server URL — the machine that will compile\n(start it there first with:  node server/server.js)', cur);
+  if (!url) return;
+  const base = url.trim().replace(/\/+$/, '');
+  try {
+    const r = await fetch(base + '/api/health', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    ls.set('cd.server', base);
+    log('<span class="info">🔌 Server found at <b>' + esc(base) + '</b> — reloading connected…</span>');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) {
+    log('<span class="err">Could not reach a code-droid server at ' + esc(base) + '.\nStart it on that machine with:  node server/server.js\n(the server needs code-droid 0.4.2+ for cross-origin access)</span>');
   }
 };
 
@@ -827,7 +847,7 @@ const dl = { url: null, filename: null };
 function offerDownload(url, filename) {
   dl.url = url; dl.filename = filename;
   $('dl-title').textContent = '⬇ ' + filename;
-  $('dl-url').value = location.origin + url;
+  $('dl-url').value = new URL(url, location.href).href;
   $('btn-dl-copy').textContent = '⧉ Copy';
   $('dl-modal').classList.remove('hidden');
 }
@@ -1209,12 +1229,25 @@ $('project-select').onchange = async (e) => {
 (async function boot() {
   try {
     log('<span class="info">Welcome to code-droid! The light Android IDE. 🤖<br>Ctrl+P quick-open · Ctrl+Shift+F search · Ctrl+B explorer · drafts auto-saved in your browser · Import/Export .zip · ⟳ restart.</span>');
-    // static demo mode: no node server (GitHub Pages, file://, previews)
+    // server discovery: same-origin first, then a saved local server —
+    // that's how the GitHub Pages page can drive a code-droid server
+    // running on the user's own machine (builds run locally there).
     try {
       const hr = await fetch('/api/health', { cache: 'no-store' });
-      CD_STATIC = !hr.ok;
-    } catch { CD_STATIC = true; }
-    if (CD_STATIC) log('<span class="info">📄 <b>Static demo mode</b> — no code-droid server detected. Explorer & editing work; changes stay in this browser. APK builds need <b>node server/server.js</b> running locally.</span>');
+      if (!hr.ok) throw new Error('no same-origin server');
+    } catch {
+      const saved = (ls.get('cd.server') || '').replace(/\/+$/, '');
+      let connected = false;
+      if (saved) {
+        try {
+          const r2 = await fetch(saved + '/api/health', { cache: 'no-store' });
+          if (r2.ok) { API_BASE = saved; connected = true; }
+        } catch { /* saved server not running */ }
+      }
+      CD_STATIC = !connected;
+    }
+    if (CD_STATIC) log('<span class="info">📄 <b>Static demo mode</b> — no code-droid server detected. Explorer & editing work; changes stay in this browser.\nFor local APK builds: run <b>node server/server.js</b> on your machine, then press 🔌 Connect here.</span>');
+    else if (API_BASE) log('<span class="info">🔌 Connected to local server <b>' + esc(API_BASE) + '</b> — files & builds live on that machine.</span>');
     if (ls.get('cd.console') === 'collapsed') $('console-pane').classList.add('collapsed');
     if (ls.get('cd.sidebar') === 'collapsed') document.body.classList.add('sidebar-collapsed');
     const savedProject = ls.get('cd.project');
