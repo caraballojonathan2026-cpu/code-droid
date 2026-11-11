@@ -33,7 +33,18 @@ if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then ok "
 
 echo
 echo "[ code-droid toolchain ]   ($DEST)"
-if ls "$DEST"/sdk/build-tools/*/aapt2 >/dev/null 2>&1 && ls "$DEST"/sdk/platforms/*/android.jar >/dev/null 2>&1 && ls "$DEST"/kotlin/*/bin/kotlinc >/dev/null 2>&1; then
+HAS_SDK=0
+for cand in "$DEST/sdk" "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Android/Sdk"; do
+  [ -n "$cand" ] && [ -d "$cand" ] || continue
+  if (ls "$cand"/build-tools/*/aapt2* >/dev/null 2>&1) && ls "$cand"/platforms/*/android.jar >/dev/null 2>&1; then
+    HAS_SDK=1; break
+  fi
+done
+HAS_KT=0
+if ls "$DEST"/kotlin/*/bin/kotlinc* >/dev/null 2>&1 || command -v kotlinc >/dev/null 2>&1; then
+  HAS_KT=1
+fi
+if [ "$HAS_SDK" -eq 1 ] && [ "$HAS_KT" -eq 1 ]; then
   ok "toolchain installed ($(du -sh "$DEST" 2>/dev/null | cut -f1))"
 else
   warn "toolchain not downloaded yet  → run:  bash tools/install.sh   (~300MB, one time)"

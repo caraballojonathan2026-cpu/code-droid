@@ -40,7 +40,11 @@ function identityArgs(repoRoot) {
 function ensureRepo(repoRoot) {
   const probe = git(['rev-parse', '--is-inside-work-tree'], repoRoot);
   if (probe.ok && probe.out.trim().startsWith('true')) return { ok: true, created: false };
-  const init = git(['init', '-b', 'main'], repoRoot);
+  let init = git(['init', '-b', 'main'], repoRoot);
+  if (!init.ok) {
+    init = git(['init'], repoRoot);
+    if (init.ok) git(['symbolic-ref', 'HEAD', 'refs/heads/main'], repoRoot);
+  }
   return init.ok ? { ok: true, created: true } : { ok: false, error: init.out };
 }
 
@@ -61,6 +65,7 @@ function commit(repoRoot, project, message, description) {
 
   const args = [...identityArgs(repoRoot), 'commit', '-m', message.trim()];
   if (description && description.trim()) args.push('-m', description.trim());
+  args.push('--', rel);
   const r = git(args, repoRoot);
   if (!r.ok) return { ok: false, error: r.out };
 

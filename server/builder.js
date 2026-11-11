@@ -73,16 +73,29 @@ function walkAll(dir, out = []) {
   return out;
 }
 
-function dexShards(dir) {
-  try { return fs.readdirSync(dir).filter((f) => /^classes(\d*)\.dex$/.test(f)).sort(); }
-  catch { return []; }
+function dexOrder(f) {
+  const m = /^classes(\d*)\.dex$/.exec(f);
+  return m ? (m[1] ? Number(m[1]) : 1) : 999999;
 }
 
-/* Cheap change detector: path + size + mtime of every file under src/,
+function dexShards(dir) {
+  try {
+    return fs.readdirSync(dir)
+      .filter((f) => /^classes(\d*)\.dex$/.test(f))
+      .sort((a, b) => dexOrder(a) - dexOrder(b));
+  } catch { return []; }
+}
+
+/* Cheap change detector: path + size + mtime of every file under src/ + code-droid.json,
  * plus toolchain bits that affect the output. Make-style, content-free. */
-function inputsSignature(projectRoot, srcMain, T, minApi, targetApi) {
+function inputsSignature(projectRoot, srcMain, T, minApi, targetApi, appId) {
   const h = crypto.createHash('sha1');
-  h.update(`v3|${minApi}|${targetApi}|${T.sdk.androidJar}|${path.basename(T.kotlin.home)}`);
+  h.update(`v4|${minApi}|${targetApi}|${appId || ''}|${T.sdk.androidJar}|${path.basename(T.kotlin.home)}`);
+  const metaFile = path.join(projectRoot, 'code-droid.json');
+  if (fs.existsSync(metaFile)) {
+    const mst = fs.statSync(metaFile);
+    h.update(`meta|${mst.size}|${Math.round(mst.mtimeMs)};`);
+  }
   const files = walkAll(srcMain).sort();
   for (const f of files) {
     const st = fs.statSync(f);
@@ -152,6 +165,10 @@ async function buildProject(projectRoot, toolsInfo) {
   const minApi = String(minApiNum);
   const platformApi = (() => { const m = /android-(\d+)/.exec(T.sdk.platform || ''); return m ? Number(m[1]) : 33; })();
   const targetApi = String(Math.min(Number(meta.targetSdk || platformApi), platformApi));
+  const manifestXml = fs.readFileSync(manifest, 'utf8');
+  const manifestPkg = ((/\bpackage\s*=\s*"([^"]+)"/.exec(manifestXml)) || [])[1] || '';
+  const validPkg = (s) => typeof s === 'string' && /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(s);
+  const appId = validPkg(meta.applicationId) ? meta.applicationId : manifestPkg;
 
   const t0 = Date.now();
   const steps = [];
@@ -163,7 +180,7 @@ async function buildProject(projectRoot, toolsInfo) {
   });
 
   // ---- up-to-date check: skip EVERYTHING when inputs are unchanged ----
-  const { sig, fileCount } = inputsSignature(projectRoot, srcMain, T, minApi, targetApi);
+  const { sig, fileCount } = inputsSignature(projectRoot, srcMain, T, minApi, targetApi, appId);
   let prev = null;
   try { prev = JSON.parse(fs.readFileSync(sigFile, 'utf8')); } catch { /* no prior build */ }
   if (prev && prev.sig === sig && fs.existsSync(finalApk)) {
@@ -182,7 +199,7 @@ async function buildProject(projectRoot, toolsInfo) {
   for (const d of [buildDir, genDir, classesDir, projectDexDir, finalDexDir]) fs.mkdirSync(d, { recursive: true });
 
   // 1) compile resources (optional for code-only UIs)
-  if (fs.existsSync(resDir) && fs.readdirSync(resDir).length) {
+  if (fs.existsSync(resDir) && walkAll(resDir).length) {
     if (!await step('aapt2 compile', T.aapt2, ['compile', '--dir', resDir, '-o', path.join(buildDir, 'res.zip')])) return fail(steps);
   }
 
@@ -190,29 +207,53 @@ async function buildProject(projectRoot, toolsInfo) {
   const linkArgs = ['link', '-o', unsignedApk, '-I', T.sdk.androidJar,
     '--manifest', manifest, '--java', genDir,
     '--min-sdk-version', minApi, '--target-sdk-version', targetApi];
+  if (appId && manifestPkg && appId !== manifestPkg) {
+    linkArgs.push('--rename-manifest-package', appId);
+  }
   if (fs.existsSync(path.join(buildDir, 'res.zip'))) linkArgs.push(path.join(buildDir, 'res.zip'));
   if (!await step('aapt2 link', T.aapt2, linkArgs)) return fail(steps);
 
-  // 3) kotlinc and javac(R.java) IN PARALLEL — independent once gen/ exists
-  const ktRoots = [javaDir, path.join(srcMain, 'kotlin')].filter((d) => fs.existsSync(d) && walk(d, '.kt').length);
-  if (!ktRoots.length) return fail(steps.concat([{ name: 'kotlinc', ok: false, ms: 0, log: 'No Kotlin sources under app/src/main/java' }]));
+  // 3) compile Kotlin & Java sources
+  //    - Common case (no user .java files): kotlinc and javac(R.java) run IN PARALLEL.
+  //    - Mixed/Java project: kotlinc runs first (seeing .java sources), then javac compiles
+  //      user .java + R.java against classesDir so Java<->Kotlin interop works both ways.
+  const srcRoots = [javaDir, path.join(srcMain, 'kotlin')].filter((d) => fs.existsSync(d));
+  const ktRoots = srcRoots.filter((d) => walk(d, '.kt').length);
+  const userJava = srcRoots.reduce((acc, d) => acc.concat(walk(d, '.java')), []);
+  if (!ktRoots.length && !userJava.length) {
+    return fail(steps.concat([{ name: 'compile', ok: false, ms: 0, log: 'No Kotlin (.kt) or Java (.java) sources under app/src/main/java' }]));
+  }
   const ktCount = ktRoots.reduce((n, d) => n + walk(d, '.kt').length, 0);
   const cp = [T.sdk.androidJar, T.kotlin.stdlib].filter(Boolean).join(path.delimiter);
   const genJava = walk(genDir, '.java');
+  const allJava = [...genJava, ...userJava];
 
-  const parallelJobs = [
-    run(`kotlinc (${ktCount} files)`, T.kotlin.bin, [...ktRoots, genDir, '-classpath', cp, '-d', classesDir]),
-  ];
-  if (genJava.length && toolsInfo.tools.java.javac) {
-    parallelJobs.push(run('javac (R.java)  ∥', toolsInfo.tools.java.javac, ['-cp', T.sdk.androidJar, '-d', classesDir, ...genJava]));
+  if (allJava.length && !(T.java && T.java.javac)) {
+    return fail(steps.concat([{ name: 'javac', ok: false, ms: 0, log: 'javac not found — install a full JDK 11+ (not just a JRE).' }]));
   }
-  const parallelResults = await Promise.all(parallelJobs);
-  steps.push(...parallelResults);
-  if (parallelResults.some((s) => !s.ok)) return fail(steps);
+
+  if (userJava.length === 0) {
+    const parallelJobs = [
+      run(`kotlinc (${ktCount} files)`, T.kotlin.bin, [...ktRoots, genDir, '-classpath', cp, '-d', classesDir]),
+    ];
+    if (genJava.length) {
+      parallelJobs.push(run('javac (R.java)  ∥', T.java.javac, ['-cp', T.sdk.androidJar, '-d', classesDir, ...genJava]));
+    }
+    const parallelResults = await Promise.all(parallelJobs);
+    steps.push(...parallelResults);
+    if (parallelResults.some((s) => !s.ok)) return fail(steps);
+  } else {
+    if (ktRoots.length) {
+      const ktInputs = [...new Set([...ktRoots, ...srcRoots, genDir])];
+      if (!await step(`kotlinc (${ktCount} files)`, T.kotlin.bin, [...ktInputs, '-classpath', cp, '-d', classesDir])) return fail(steps);
+    }
+    const javaCp = [T.sdk.androidJar, T.kotlin.stdlib, classesDir].filter(Boolean).join(path.delimiter);
+    if (!await step(`javac (${allJava.length} files)`, T.java.javac, ['-cp', javaCp, '-d', classesDir, ...allJava])) return fail(steps);
+  }
 
   // 4) DEX the project classes (jar first so argument lists stay short on huge projects)
   const classFiles = walk(classesDir, '.class');
-  if (!classFiles.length) return fail(steps.concat([{ name: 'd8', ok: false, ms: 0, log: 'kotlinc produced no class files' }]));
+  if (!classFiles.length) return fail(steps.concat([{ name: 'd8', ok: false, ms: 0, log: 'compiler produced no class files' }]));
   let d8Inputs;
   if (toolsInfo.tools.java.jar) {
     const jarPath = path.join(buildDir, 'classes.jar');
@@ -225,8 +266,8 @@ async function buildProject(projectRoot, toolsInfo) {
 
   // 4b) cached stdlib dex
   const toolsRoot = path.dirname(toolsInfo.tools.keystore);
-  const stdlibCache = await ensureStdlibDex(T, minApi, toolsRoot, steps);
-  if (stdlibCache === null && T.kotlin.stdlib) return fail(steps);
+  const stdlibCache = ktRoots.length ? await ensureStdlibDex(T, minApi, toolsRoot, steps) : null;
+  if (ktRoots.length && stdlibCache === null && T.kotlin.stdlib) return fail(steps);
 
   // 5) assemble dex set: project shards first, stdlib shards renumbered after
   const projectShards = dexShards(projectDexDir);
@@ -240,7 +281,7 @@ async function buildProject(projectRoot, toolsInfo) {
       fs.copyFileSync(path.join(stdlibCache, f), path.join(finalDexDir, dexCount === 1 ? 'classes.dex' : `classes${dexCount}.dex`));
     }
   }
-  const dexPaths = fs.readdirSync(finalDexDir).filter((f) => f.endsWith('.dex')).sort().map((f) => path.join(finalDexDir, f));
+  const dexPaths = dexShards(finalDexDir).map((f) => path.join(finalDexDir, f));
   if (!await step(`package ${dexPaths.length} dex`, T.zip, ['-j', unsignedApk, ...dexPaths])) return fail(steps);
 
   // 6) align
@@ -250,7 +291,7 @@ async function buildProject(projectRoot, toolsInfo) {
   if (!await ensureKeystore(toolsInfo.tools, steps)) return fail(steps);
   if (!await step('apksigner', T.apksigner, ['sign', '--ks', toolsInfo.tools.keystore,
     '--ks-pass', 'pass:android', '--key-pass', 'pass:android', '--out', finalApk, alignedApk])) return fail(steps);
-  await step('verify', T.apksigner, ['verify', finalApk]);
+  if (!await step('verify', T.apksigner, ['verify', finalApk])) return fail(steps);
 
   // remember the signature for next time
   try { fs.writeFileSync(sigFile, JSON.stringify({ sig, at: new Date().toISOString(), fileCount })); } catch { /* non-fatal */ }
@@ -271,7 +312,7 @@ async function buildProject(projectRoot, toolsInfo) {
     apk: 'build/app-debug.apk',
     release,
     sizeKB: Math.round(fs.statSync(finalApk).size / 1024),
-    totalMs: steps.reduce((a, s) => a + s.ms, 0),
+    totalMs: Date.now() - t0,
     steps,
     install: install(),
   };

@@ -27,11 +27,16 @@ function init({ projectsDir, templatesDir }) {
   }
 }
 
-function copyDir(src, dst) {
+function copyDir(src, dst, opts = {}) {
   fs.mkdirSync(dst, { recursive: true });
   for (const e of fs.readdirSync(src, { withFileTypes: true })) {
     const s = path.join(src, e.name); const d = path.join(dst, e.name);
-    if (e.isDirectory()) copyDir(s, d); else fs.copyFileSync(s, d);
+    if (e.isSymbolicLink()) {
+      if (opts.rejectSymlinks) throw new Error('unsafe symbolic link in archive: ' + e.name);
+      continue;
+    }
+    if (e.isDirectory()) copyDir(s, d, opts);
+    else if (e.isFile()) fs.copyFileSync(s, d);
   }
 }
 
@@ -50,9 +55,12 @@ function projectRoot(project) {
 
 function resolveIn(project, rel) {
   const root = projectRoot(project);
-  const p = path.resolve(root, String(rel || ''));
-  if (p !== root && !p.startsWith(root + path.sep)) throw new Error('path escapes project');
-  if (p.includes(`${path.sep}build${path.sep}`) || p.endsWith(`${path.sep}build`)) throw new Error('build/ is managed by code-droid');
+  const raw = String(rel || '').trim();
+  if (!raw) throw new Error('file path required');
+  const p = path.resolve(root, raw);
+  if (p === root || !p.startsWith(root + path.sep)) throw new Error('path escapes project');
+  const relNorm = path.relative(root, p);
+  if (relNorm.split(path.sep)[0] === 'build') throw new Error('build/ is managed by code-droid');
   return p;
 }
 
@@ -95,15 +103,34 @@ function fileTree(project) {
 }
 
 const MAX_OPEN_SIZE = 8 * 1024 * 1024; // never slurp more than 8MB into the editor
+function isLikelyBinary(buf) {
+  const len = Math.min(buf.length, 8192);
+  for (let i = 0; i < len; i++) if (buf[i] === 0) return true;
+  return false;
+}
+
 function readFile(project, rel) {
   const p = resolveIn(project, rel);
+  if (!fs.existsSync(p)) throw new Error('file not found: ' + rel);
   const st = fs.statSync(p);
+  if (st.isDirectory()) throw new Error('cannot open a directory as a file: ' + rel);
   if (st.size > MAX_OPEN_SIZE) throw new Error(`file too large to open (${Math.round(st.size / 1048576)}MB > 8MB limit)`);
-  return { content: fs.readFileSync(p, 'utf8'), mtime: st.mtimeMs, size: st.size };
+  const buf = fs.readFileSync(p);
+  if (isLikelyBinary(buf)) throw new Error('binary file cannot be edited as text (right-click → Download this file)');
+  return { content: buf.toString('utf8'), mtime: st.mtimeMs, size: st.size };
+}
+
+function readRawFile(project, rel) {
+  const p = resolveIn(project, rel);
+  if (!fs.existsSync(p)) throw new Error('file not found: ' + rel);
+  const st = fs.statSync(p);
+  if (st.isDirectory()) throw new Error('cannot download a directory as a file: ' + rel);
+  return { buf: fs.readFileSync(p), name: path.basename(p), size: st.size };
 }
 
 function writeFile(project, rel, content) {
   const p = resolveIn(project, rel);
+  if (fs.existsSync(p) && fs.statSync(p).isDirectory()) throw new Error('cannot overwrite a directory with a file: ' + rel);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, content);
   invalidate(project);
@@ -119,7 +146,9 @@ function create(project, rel, type) {
 }
 
 function remove(project, rel) {
-  fs.rmSync(resolveIn(project, rel), { recursive: true, force: true });
+  const p = resolveIn(project, rel);
+  if (!fs.existsSync(p)) throw new Error('not found: ' + rel);
+  fs.rmSync(p, { recursive: true, force: true });
   invalidate(project);
 }
 
@@ -133,13 +162,69 @@ function rename(project, rel, newRel) {
   invalidate(project);
 }
 
+function escapeAndroidXmlString(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '\\"')
+    .replace(/'/g, "\\'");
+}
+
 function createProject(name) {
-  const id = safeName(name).toLowerCase().replace(/\s+/g, '-');
+  const cleanName = String(name || '').trim();
+  const id = safeName(cleanName).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!id || id === '.' || id === '..') throw new Error('invalid name');
   const dst = path.join(PROJECTS_DIR, id);
   if (fs.existsSync(dst)) throw new Error('project already exists: ' + id);
   copyDir(path.join(TEMPLATES_DIR, 'hello'), dst);
+
+  // Customize template metadata, package, strings.xml & MainActivity.kt
+  let pkgSeg = id.replace(/[^a-z0-9]/g, '');
+  if (!pkgSeg || /^[0-9]/.test(pkgSeg)) pkgSeg = 'app' + pkgSeg;
+  const appId = 'com.example.' + pkgSeg;
+
+  const metaPath = path.join(dst, 'code-droid.json');
+  if (fs.existsSync(metaPath)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      meta.appName = cleanName;
+      meta.applicationId = appId;
+      fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
+    } catch { /* keep template default */ }
+  }
+
+  const stringsPath = path.join(dst, 'app', 'src', 'main', 'res', 'values', 'strings.xml');
+  if (fs.existsSync(stringsPath)) {
+    const xml = fs.readFileSync(stringsPath, 'utf8')
+      .replace(/<string name="app_name">[\s\S]*?<\/string>/, `<string name="app_name">${escapeAndroidXmlString(cleanName)}</string>`);
+    fs.writeFileSync(stringsPath, xml);
+  }
+
+  const manifestPath = path.join(dst, 'app', 'src', 'main', 'AndroidManifest.xml');
+  if (fs.existsSync(manifestPath)) {
+    const mf = fs.readFileSync(manifestPath, 'utf8')
+      .replace(/package="com\.example\.hellodroid"/, `package="${appId}"`);
+    fs.writeFileSync(manifestPath, mf);
+  }
+
+  const oldKtDir = path.join(dst, 'app', 'src', 'main', 'java', 'com', 'example', 'hellodroid');
+  const oldKt = path.join(oldKtDir, 'MainActivity.kt');
+  if (fs.existsSync(oldKt)) {
+    const kt = fs.readFileSync(oldKt, 'utf8')
+      .replace(/^package\s+com\.example\.hellodroid\b/m, `package ${appId}`);
+    if (pkgSeg !== 'hellodroid') {
+      const newKtDir = path.join(dst, 'app', 'src', 'main', 'java', 'com', 'example', pkgSeg);
+      fs.mkdirSync(newKtDir, { recursive: true });
+      fs.writeFileSync(path.join(newKtDir, 'MainActivity.kt'), kt);
+      fs.rmSync(oldKtDir, { recursive: true, force: true });
+    } else {
+      fs.writeFileSync(oldKt, kt);
+    }
+  }
+
   invalidate(id);
-  return { id, name };
+  return { id, name: cleanName };
 }
 
 function uniqueProjectId(base) {
@@ -155,10 +240,18 @@ function uniqueProjectId(base) {
 function importDir(tmpUnpackedDir, wantedName) {
   // If the zip has a single top-level folder, that's the project root.
   const entries = fs.readdirSync(tmpUnpackedDir, { withFileTypes: true });
+  if (entries.some((e) => e.isSymbolicLink())) throw new Error('unsafe symbolic link in archive');
   let src = tmpUnpackedDir;
   if (entries.length === 1 && entries[0].isDirectory()) src = path.join(tmpUnpackedDir, entries[0].name);
   const id = uniqueProjectId(wantedName || entries[0]?.name || 'imported');
-  copyDir(src, path.join(PROJECTS_DIR, id));
+  const dst = path.join(PROJECTS_DIR, id);
+  try {
+    copyDir(src, dst, { rejectSymlinks: true });
+  } catch (e) {
+    fs.rmSync(dst, { recursive: true, force: true });
+    throw e;
+  }
+  invalidate(id);
   return { id };
 }
 
@@ -202,6 +295,6 @@ function search(project, query, opts = {}) {
 }
 
 module.exports = {
-  init, listProjects, fileTree, readFile, writeFile, create, remove, rename,
+  init, listProjects, fileTree, readFile, readRawFile, writeFile, create, remove, rename,
   createProject, apkPath, projectRoot, search, importDir, uniqueProjectId,
 };

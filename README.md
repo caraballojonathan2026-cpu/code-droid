@@ -31,7 +31,7 @@ Measured in a **1.9 GB RAM / 2 CPU** sandbox: a **201-file Kotlin app** builds i
 ## Quick start
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/code-droid.git
+git clone https://github.com/caraballojonathan2026-cpu/code-droid.git
 cd code-droid
 
 # 0. sanity check your machine (Node 16+, JDK 11+, zip/unzip, curl)
@@ -167,7 +167,7 @@ Not yet: AndroidX/Jetpack libraries, Jetpack Compose, AAR dependencies, NDK, res
 
 **Offline?** Only `tools/install.sh` needs internet, once. Coding/building work fully offline; unsaved work lives in the browser.
 
-**Server on another machine?** Yes — `HOST=0.0.0.0 npm start` on a beefier box, code from a tablet/Chromebook. (No auth yet; LAN-only, please.)
+**Server on another machine?** Yes — the server binds `0.0.0.0` by default (use `HOST=127.0.0.1 npm start` to restrict to localhost on shared networks), so you can run it on a beefier box and code from a tablet/Chromebook on your LAN. Cross-origin API access is restricted to trusted origins (`localhost`, same-origin, and configured `CORS_ORIGINS`).
 
 ## License
 

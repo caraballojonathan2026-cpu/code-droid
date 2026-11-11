@@ -11,6 +11,7 @@ on:
       - 'templates/**'
       - 'server/**'
       - 'tools/**'
+      - 'web/**'
       - '.github/workflows/build-apk.yml'
   workflow_dispatch:
 
@@ -29,11 +30,14 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: UI & backend smoke tests
+        run: npm run smoke
+
       - name: Install toolchain (~300MB, from Google/JetBrains)
         run: bash tools/install.sh
 
-      - name: Build APK (code-droid direct pipeline)
-        run: node tools/ci-build.js
+      - name: Compiler self-test & APK build (code-droid direct pipeline)
+        run: npm test
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
