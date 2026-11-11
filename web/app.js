@@ -31,7 +31,12 @@ const ls = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* quota — drafts are best-effort */ } },
   del(k) { try { localStorage.removeItem(k); } catch {} },
 };
-const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const esc = (s) => String(s)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + 'MB' : n > 1024 ? Math.round(n / 1024) + 'KB' : n + 'B';
 const fmtTime = (t) => new Date(t).toLocaleTimeString();
@@ -54,13 +59,31 @@ async function api(path, opts = {}) {
   return data;
 }
 
+const FALLBACK_MANIFEST = {
+  project: { id: 'hello-droid', name: 'Hello Droid' },
+  files: {
+    'code-droid.json': '{\n  "appName": "Hello Droid",\n  "applicationId": "com.example.hellodroid",\n  "minSdk": 21,\n  "targetSdk": 34\n}\n',
+    'app/src/main/AndroidManifest.xml': '<?xml version="1.0" encoding="utf-8"?>\n<manifest xmlns:android="http://schemas.android.com/apk/res/android"\n    package="com.example.hellodroid"\n    android:versionCode="1"\n    android:versionName="1.0">\n    <application android:label="@string/app_name">\n        <activity android:name=".MainActivity" android:exported="true">\n            <intent-filter>\n                <action android:name="android.intent.action.MAIN" />\n                <category android:name="android.intent.category.LAUNCHER" />\n            </intent-filter>\n        </activity>\n    </application>\n</manifest>\n',
+    'app/src/main/res/values/strings.xml': '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <string name="app_name">Hello Droid</string>\n</resources>\n',
+    'app/src/main/java/com/example/hellodroid/MainActivity.kt': 'package com.example.hellodroid\n\nimport android.app.Activity\nimport android.os.Bundle\nimport android.widget.TextView\n\nclass MainActivity : Activity() {\n    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        setContentView(TextView(this).apply { text = "Hello from code-droid! 🤖" })\n    }\n}\n',
+  },
+};
+
 const staticStore = {
   manifest: null, files: null,
   async load() {
     if (this.files) return this.files;
-    const res = await fetch('static-files.json');
-    if (!res.ok) throw new Error('static-files.json missing (HTTP ' + res.status + ')');
-    this.manifest = await res.json();
+    try {
+      const res = await fetch('static-files.json');
+      if (!res.ok) throw new Error('static-files.json missing (HTTP ' + res.status + ')');
+      this.manifest = await res.json();
+    } catch (e) {
+      if (typeof location !== 'undefined' && location.protocol === 'file:') {
+        this.manifest = FALLBACK_MANIFEST;
+      } else {
+        throw e;
+      }
+    }
     this.files = { ...this.manifest.files };
     let overlay = {};
     try { overlay = JSON.parse(localStorage.getItem('cd.static.overlay') || '{}'); } catch {}
@@ -80,10 +103,11 @@ const staticStore = {
 function staticTree(files) {
   const root = {};
   for (const fp of Object.keys(files)) {
-    const parts = fp.split('/');
+    const parts = fp.split('/').filter(Boolean);
     let node = root;
     for (let i = 0; i < parts.length; i++) {
       const last = i === parts.length - 1;
+      if (parts[i].startsWith('.')) break; // hide .keep and dotfiles while preserving parent folders
       const key = parts.slice(0, i + 1).join('/');
       node[key] = node[key] || { name: parts[i], path: key, type: last ? 'file' : 'dir', children: {} };
       if (last) node[key].size = files[fp].length;
@@ -99,56 +123,73 @@ function staticTree(files) {
 }
 
 async function staticApi(path, opts = {}) {
-  const u = new URL(path, location.href);
+  const u = new URL(path, 'http://cd.local');
   const p = u.pathname, q = u.searchParams, body = opts.body || {};
   const norm = (s) => String(s || '').replace(/^\/+|\/+$/g, '');
   const noServer = (what) => { throw new Error(what + ' needs the code-droid server.\nRun it locally:  node server/server.js'); };
   const files = await staticStore.load();
   const proj = staticStore.manifest.project;
 
+  if (p === '/api/health') return { ok: true, name: 'code-droid', static: true };
   if (p === '/api/projects') return { projects: [{ id: proj.id, name: proj.name }] };
   if (p === '/api/tools') return { ready: false, missing: [], static: true };
   if (p === '/api/files') {
     const tree = staticTree(files);
-    return { tree, truncated: false, nodeCount: Object.keys(files).length };
+    const visibleCount = Object.keys(files).filter((k) => !k.split('/').some((seg) => seg.startsWith('.'))).length;
+    return { tree, truncated: false, nodeCount: visibleCount };
   }
   if (p === '/api/file' && !opts.body) {
     const rel = norm(q.get('path'));
-    if (!(rel in files)) throw new Error('HTTP 404');
+    if (!rel || !(rel in files) || rel.split('/').pop().startsWith('.')) throw new Error('file not found: ' + rel);
     return { path: rel, content: files[rel], mtime: Date.now(), size: files[rel].length };
   }
   if (p === '/api/file' && opts.body) {
     const rel = norm(body.path);
+    if (!rel) throw new Error('file path required');
     files[rel] = String(body.content ?? '');
     staticStore.persist();
     return { saved: rel, mtime: Date.now() };
   }
   if (p === '/api/file/new') {
-    let rel = norm(body.path);
-    if (body.type === 'dir') rel = rel + '/.keep';
-    if (!(rel in files)) files[rel] = '';
+    const baseRel = norm(body.path);
+    if (!baseRel) throw new Error('file path required');
+    const hasChild = Object.keys(files).some((k) => k === baseRel || k.startsWith(baseRel + '/'));
+    if (hasChild) throw new Error('already exists: ' + baseRel);
+    const rel = body.type === 'dir' ? baseRel + '/.keep' : baseRel;
+    files[rel] = '';
     staticStore.persist();
     return { created: body.path };
   }
   if (p === '/api/file/delete') {
     const rel = norm(body.path);
-    for (const k of Object.keys(files)) if (k === rel || k.startsWith(rel + '/')) delete files[k];
+    if (!rel) throw new Error('file path required');
+    const matched = Object.keys(files).filter((k) => k === rel || k.startsWith(rel + '/'));
+    if (!matched.length) throw new Error('not found: ' + rel);
+    for (const k of matched) delete files[k];
     staticStore.persist();
     return { deleted: body.path };
   }
   if (p === '/api/file/rename') {
     const rel = norm(body.path), np = norm(body.newPath);
-    for (const k of Object.keys(files)) {
-      if (k === rel || k.startsWith(rel + '/')) { files[np + k.slice(rel.length)] = files[k]; delete files[k]; }
+    if (!rel || !np) throw new Error('file path required');
+    const matched = Object.keys(files).filter((k) => k === rel || k.startsWith(rel + '/'));
+    if (!matched.length) throw new Error('not found: ' + rel);
+    const conflict = Object.keys(files).some((k) => k === np || k.startsWith(np + '/'));
+    if (conflict) throw new Error('already exists: ' + np);
+    for (const k of matched) {
+      files[np + k.slice(rel.length)] = files[k];
+      delete files[k];
     }
     staticStore.persist();
     return { renamed: body.path, to: body.newPath };
   }
   if (p === '/api/search') {
     const needle = q.get('q') || '', ci = q.get('ci') !== '0';
+    if (needle.length < 2) throw new Error('query too short');
     const ndl = ci ? needle.toLowerCase() : needle;
     const results = [];
     for (const [fp, content] of Object.entries(files)) {
+      if (fp.split('/').some((seg) => seg.startsWith('.'))) continue;
       const lines = content.split('\n');
       for (let i = 0; i < lines.length && results.length < 100; i++) {
         const hay = ci ? lines[i].toLowerCase() : lines[i];
@@ -450,6 +491,7 @@ editor.addEventListener('input', () => {
   t.content = editor.value;
   t.lines = null; // invalidate viewport cache
   t.dirty = editor.value !== t.saved;
+  t.pendingBanner = null;
   markTabDirty();
   requestRender();
   clearTimeout(t._draftTimer);
@@ -479,12 +521,17 @@ function showBanner(text, ctx) {
   disc.textContent = ctx.mode === 'conflict' ? 'Discard draft' : 'Discard draft';
 }
 function hideBanner() { $('draft-banner').classList.add('hidden'); state.draftCtx = null; }
-$('btn-draft-save').onclick = async () => { await saveActive(); hideBanner(); };
+$('btn-draft-save').onclick = async () => {
+  try { await saveActive(); hideBanner(); }
+  catch (e) { log('<span class="err">Save failed: ' + esc(e.message) + '</span>'); }
+};
 $('btn-draft-hide').onclick = hideBanner;
 $('btn-draft-discard').onclick = () => {
   const ctx = state.draftCtx;
   if (ctx) {
     clearDraft(ctx.path);
+    const tab = state.tabs.get(ctx.path);
+    if (tab) tab.pendingBanner = null;
     if (ctx.mode === 'conflict') { /* disk version stays */ }
     if (ctx.mode === 'restored' && state.active === ctx.path) {
       const t = curTab();
@@ -505,8 +552,10 @@ useDraftBtn.onclick = () => {
   const t = curTab();
   t.content = ctx.draft.c; t.mtime = ctx.draft.m; editor.value = ctx.draft.c;
   t.dirty = true; t.lines = null;
+  const nextBanner = { text: `Using your draft from ${fmtTime(ctx.draft.t)} — not saved to disk yet.`, ctx: { ...ctx, mode: 'restored' } };
+  t.pendingBanner = nextBanner;
   markTabDirty(); requestRender();
-  showBanner(`Using your draft from ${fmtTime(ctx.draft.t)} — not saved to disk yet.`, { ...ctx, mode: 'restored' });
+  showBanner(nextBanner.text, nextBanner.ctx);
 };
 
 const origShowBanner = showBanner;
@@ -521,15 +570,15 @@ async function openFile(p, opts = {}) {
     let f;
     try { f = await api(`/api/file?project=${encodeURIComponent(state.project)}&path=${encodeURIComponent(p)}`); }
     catch (e) { if (!opts.silent) log('<span class="err">' + esc(e.message) + '</span>'); return; }
-    const t = { path: p, content: f.content, saved: f.content, mtime: f.mtime, dirty: false, big: false, lines: null, readonly: f.size > READONLY_AT };
+    const t = { path: p, content: f.content, saved: f.content, mtime: f.mtime, dirty: false, big: false, lines: null, readonly: f.size > READONLY_AT, pendingBanner: null };
     // draft recovery
     const d = loadDraft(p);
     if (d && d.c !== f.content) {
       if (d.m === f.mtime) {
         t.content = d.c; t.mtime = d.m; t.dirty = true;
-        state._pendingBanner = { text: `✏ Restored unsaved changes from ${fmtTime(d.t)} (never saved to disk).`, ctx: { path: p, mode: 'restored', draft: d } };
+        t.pendingBanner = { text: `✏ Restored unsaved changes from ${fmtTime(d.t)} (never saved to disk).`, ctx: { path: p, mode: 'restored', draft: d } };
       } else {
-        state._pendingBanner = { text: `⚠ Disk version is newer than your draft from ${fmtTime(d.t)}. Disk version is shown.`, ctx: { path: p, mode: 'conflict', draft: d } };
+        t.pendingBanner = { text: `⚠ Disk version is newer than your draft from ${fmtTime(d.t)}. Disk version is shown.`, ctx: { path: p, mode: 'conflict', draft: d } };
       }
     }
     state.tabs.set(p, t);
@@ -542,7 +591,7 @@ async function openFile(p, opts = {}) {
   editor.readOnly = !!t.readonly;
   editor.value = t.content;
   hideBanner();
-  if (state._pendingBanner) { showBanner(state._pendingBanner.text, state._pendingBanner.ctx); state._pendingBanner = null; }
+  if (t.pendingBanner) showBanner(t.pendingBanner.text, t.pendingBanner.ctx);
   if (!state.lineH || state.lineH === 19.6) {
     state.lineH = parseFloat(getComputedStyle(editor).lineHeight) || 19.6;
   }
@@ -564,6 +613,8 @@ function renderTabs() {
   for (const [p, t] of state.tabs) {
     const tab = document.createElement('div');
     tab.className = 'tab' + (p === state.active ? ' active' : '');
+    tab.dataset.path = p;
+    tab.title = p;
     tab.innerHTML = `${esc(p.split('/').pop())}${t.dirty ? '<span class="dot">●</span>' : ''}<span class="x">✕</span>`;
     tab.querySelector('.x').onclick = (ev) => { ev.stopPropagation(); closeTab(p); };
     tab.onclick = () => openFile(p);
@@ -583,7 +634,9 @@ function markTabDirty() {
 function closeTab(p) {
   const t = state.tabs.get(p);
   if (!t) return;
-  if (t.dirty && !loadDraft(p) && t.content.length <= DRAFT_MAX) saveDraft(p, t.content, t.mtime); // close keeps a draft copy
+  clearTimeout(t._draftTimer);
+  if (p === state.active && !editor.readOnly) t.content = editor.value;
+  if (t.dirty && t.content.length <= DRAFT_MAX) saveDraft(p, t.content, t.mtime); // close keeps latest draft copy
   state.tabs.delete(p);
   if (state.active === p) {
     state.active = null;
@@ -601,7 +654,7 @@ async function saveActive() {
   if (t.readonly) return;
   t.content = editor.value;
   const r = await api('/api/file', { body: { project: state.project, path: state.active, content: editor.value } });
-  t.saved = editor.value; t.mtime = r.mtime; t.dirty = false;
+  t.saved = editor.value; t.mtime = r.mtime; t.dirty = false; t.pendingBanner = null;
   clearDraft(state.active);
   markTabDirty(); renderTabs();
 }
@@ -611,7 +664,7 @@ async function saveAll() {
     if (!t.dirty || t.readonly) continue;
     if (p === state.active) t.content = editor.value;
     const r = await api('/api/file', { body: { project: state.project, path: p, content: t.content } });
-    t.saved = t.content; t.mtime = r.mtime; t.dirty = false;
+    t.saved = t.content; t.mtime = r.mtime; t.dirty = false; t.pendingBanner = null;
     clearDraft(p);
   }
   renderTabs(); markTabDirty();
@@ -803,9 +856,16 @@ $('btn-restart').onclick = async () => {
   if (CD_STATIC) { log('<span class="info">⟳ No server to restart in static demo mode.</span>'); return; }
   if (!confirm('Restart the code-droid server?\n\nYour open tabs and unsaved work are backed up in this browser and will come back.')) return;
   stashActive();
-  if (state.active && curTab().dirty) saveDraft(state.active, editor.value, curTab().mtime);
+  for (const [p, t] of state.tabs) {
+    clearTimeout(t._draftTimer);
+    if (t.dirty && !t.readonly) saveDraft(p, t.content, t.mtime);
+  }
   persistUI();
-  try { await fetch(API_BASE + '/api/restart', { method: 'POST' }); } catch { /* server already gone */ }
+  try {
+    await fetch(API_BASE + '/api/restart', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+  } catch { /* server already gone */ }
   log('<span class="info">⟳ Restarting server…</span>');
   let back = false;
   for (let i = 0; i < 40; i++) {
@@ -824,10 +884,20 @@ $('btn-restart').onclick = async () => {
  * The hosted page (GitHub Pages) can drive a code-droid server running on
  * the user's own machine: builds compile there, APKs download here. */
 $('btn-connect').onclick = async () => {
-  const cur = ls.get('cd.server') || 'http://localhost:3000';
-  const url = prompt('code-droid server URL — the machine that will compile\n(start it there first with:  node server/server.js)', cur);
-  if (!url) return;
+  const saved = (ls.get('cd.server') || '').trim();
+  const cur = saved || 'http://localhost:3000';
+  const msg = 'code-droid server URL — the machine that will compile\n' +
+    '(start it there first with:  node server/server.js)' +
+    (saved ? `\n\nCurrently connected to: ${saved}\nLeave blank to disconnect.` : '');
+  const url = prompt(msg, cur);
+  if (url === null) return;
   const base = url.trim().replace(/\/+$/, '');
+  if (!base) {
+    ls.del('cd.server');
+    log('<span class="info">🔌 Disconnected external server — reloading…</span>');
+    setTimeout(() => location.reload(), 400);
+    return;
+  }
   try {
     const r = await fetch(base + '/api/health', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -974,13 +1044,20 @@ async function pasteFromClipboard() {
 }
 
 function tabCtx(e, tab) {
-  const p = tab.dataset.path;
+  const p = tab && tab.dataset ? tab.dataset.path : null;
+  if (!p) return;
   showCtxMenu(e.clientX, e.clientY, [
     { label: 'Close', danger: true, action: () => closeTab(p) },
     { label: 'Close Others', action: () => {
-      for (const k of [...state.tabs.keys()]) if (k !== p) state.tabs.delete(k);
+      stashActive();
+      for (const [k, other] of [...state.tabs.entries()]) {
+        if (k === p) continue;
+        clearTimeout(other._draftTimer);
+        if (other.dirty && other.content.length <= DRAFT_MAX) saveDraft(k, other.content, other.mtime);
+        state.tabs.delete(k);
+      }
       if (state.tabs.has(p)) openFile(p);
-      else { state.active = null; $('editor-wrap').classList.add('hidden'); $('welcome').classList.remove('hidden'); }
+      else { state.active = null; $('editor-wrap').classList.add('hidden'); $('welcome').classList.remove('hidden'); hideBanner(); }
       renderTabs(); persistUI();
     } },
     { sep: true },
@@ -1043,6 +1120,11 @@ async function deletePath(p, isDir) {
   } catch (e) { alert(e.message); }
 }
 async function downloadFile(p) {
+  if (!CD_STATIC) {
+    const rawUrl = API_BASE + `/api/file/raw?project=${encodeURIComponent(state.project)}&path=${encodeURIComponent(p)}`;
+    offerDownload(rawUrl, p.split('/').pop());
+    return;
+  }
   try {
     const f = await api(`/api/file?project=${encodeURIComponent(state.project)}&path=${encodeURIComponent(p)}`);
     const blob = new Blob([f.content], { type: 'application/octet-stream' });
@@ -1081,8 +1163,10 @@ function persistUI() {
 }
 window.addEventListener('beforeunload', () => {
   stashActive();
-  const t = curTab();
-  if (state.active && t && t.dirty && !editor.readOnly) saveDraft(state.active, editor.value, t.mtime);
+  for (const [p, t] of state.tabs) {
+    clearTimeout(t._draftTimer);
+    if (t.dirty && !t.readonly) saveDraft(p, t.content, t.mtime);
+  }
   persistUI();
 });
 $('btn-toggle-console').onclick = () => {
@@ -1135,9 +1219,11 @@ async function openCommit() {
   if (!state.project) return;
   $('commit-modal').classList.remove('hidden');
   $('commit-msg').value = ''; $('commit-desc').value = '';
-  $('commit-branch').textContent = 'checking git status…';
+  $('commit-branch').textContent = 'saving open files & checking git status…';
   $('commit-files').innerHTML = '<div class="dim">…</div>';
   try {
+    stashActive();
+    if (!CD_STATIC) await saveAll(); // write unsaved open tabs first so git status sees them
     const s = await api('/api/git/status?project=' + encodeURIComponent(state.project));
     $('commit-branch').textContent = s.inRepo
       ? `branch: ${s.branch} · ${s.changes.length} change(s) in projects/${state.project}/`
@@ -1229,23 +1315,26 @@ $('project-select').onchange = async (e) => {
 (async function boot() {
   try {
     log('<span class="info">Welcome to code-droid! The light Android IDE. 🤖<br>Ctrl+P quick-open · Ctrl+Shift+F search · Ctrl+B explorer · drafts auto-saved in your browser · Import/Export .zip · ⟳ restart.</span>');
-    // server discovery: same-origin first, then a saved local server —
-    // that's how the GitHub Pages page can drive a code-droid server
-    // running on the user's own machine (builds run locally there).
-    try {
-      const hr = await fetch('/api/health', { cache: 'no-store' });
-      if (!hr.ok) throw new Error('no same-origin server');
-    } catch {
-      const saved = (ls.get('cd.server') || '').replace(/\/+$/, '');
-      let connected = false;
-      if (saved) {
-        try {
-          const r2 = await fetch(saved + '/api/health', { cache: 'no-store' });
-          if (r2.ok) { API_BASE = saved; connected = true; }
-        } catch { /* saved server not running */ }
+    // server discovery: an explicit user-configured server (🔌 cd.server) wins
+    // first; otherwise try same-origin, falling back to static demo mode.
+    const saved = (ls.get('cd.server') || '').trim().replace(/\/+$/, '');
+    let connected = false;
+    if (saved) {
+      try {
+        const r2 = await fetch(saved + '/api/health', { cache: 'no-store' });
+        if (r2.ok) { API_BASE = saved; connected = true; }
+      } catch { /* saved server not running */ }
+      if (!connected) {
+        log('<span class="err">⚠ Saved server <b>' + esc(saved) + '</b> is unreachable (click 🔌 to update or clear it).</span>');
       }
-      CD_STATIC = !connected;
     }
+    if (!connected && (typeof location === 'undefined' || location.protocol !== 'file:')) {
+      try {
+        const hr = await fetch('/api/health', { cache: 'no-store' });
+        if (hr.ok) { API_BASE = ''; connected = true; }
+      } catch { /* no same-origin server */ }
+    }
+    CD_STATIC = !connected;
     if (CD_STATIC) log('<span class="info">📄 <b>Static demo mode</b> — no code-droid server detected. Explorer & editing work; changes stay in this browser.\nFor local APK builds: run <b>node server/server.js</b> on your machine, then press 🔌 Connect here.</span>');
     else if (API_BASE) log('<span class="info">🔌 Connected to local server <b>' + esc(API_BASE) + '</b> — files & builds live on that machine.</span>');
     if (ls.get('cd.console') === 'collapsed') $('console-pane').classList.add('collapsed');

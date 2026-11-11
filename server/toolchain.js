@@ -24,15 +24,26 @@ const { execFileSync } = require('child_process');
 const os = require('os');
 
 const REPO = path.resolve(__dirname, '..');
+const IS_WIN = process.platform === 'win32';
 
-function exists(p) { try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { try { fs.statSync(p); return true; } catch { return false; } } }
+function exists(p) {
+  if (!p) return false;
+  try { fs.accessSync(p, fs.constants.X_OK); return true; }
+  catch { try { return fs.statSync(p).isFile(); } catch { return false; } }
+}
+function pickExisting(...candidates) {
+  for (const c of candidates) if (c && exists(c)) return c;
+  return null;
+}
 function onPath(cmd) {
-  try { return execFileSync(process.platform === 'win32' ? 'where' : 'which', [cmd], { encoding: 'utf8' }).trim().split('\n')[0]; }
+  try { return execFileSync(IS_WIN ? 'where' : 'which', [cmd], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]; }
   catch { return null; }
 }
 function newestDir(dir, prefix) {
   try {
-    const entries = fs.readdirSync(dir).filter((d) => d.startsWith(prefix)).sort();
+    const entries = fs.readdirSync(dir)
+      .filter((d) => d.startsWith(prefix))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     return entries.length ? path.join(dir, entries[entries.length - 1]) : null;
   } catch { return null; }
 }
@@ -65,30 +76,49 @@ function findKotlinc() {
     for (const prefix of ['kotlin-compiler', 'kotlinc']) {
       const dir = newestDir(root, prefix);
       if (!dir) continue;
-      const bin = path.join(dir, 'bin', process.platform === 'win32' ? 'kotlinc.bat' : 'kotlinc');
-      if (exists(bin)) return { bin, home: dir, stdlib: path.join(dir, 'lib', 'kotlin-stdlib.jar') };
+      const bin = pickExisting(
+        path.join(dir, 'bin', IS_WIN ? 'kotlinc.bat' : 'kotlinc'),
+        path.join(dir, 'bin', 'kotlinc')
+      );
+      const stdlib = path.join(dir, 'lib', 'kotlin-stdlib.jar');
+      if (bin && exists(stdlib)) return { bin, home: dir, stdlib };
     }
   }
   const bin = onPath('kotlinc');
   if (bin) {
     const home = path.resolve(path.dirname(bin), '..');
-    return { bin, home, stdlib: path.join(home, 'lib', 'kotlin-stdlib.jar') };
+    const stdlib = path.join(home, 'lib', 'kotlin-stdlib.jar');
+    if (exists(stdlib)) return { bin, home, stdlib };
   }
   return null;
 }
 
 function findJava() {
   const java = onPath('java');
-  const javac = onPath('javac');
-  const jar = onPath('jar');
+  let javac = onPath('javac');
+  let jarTool = onPath('jar');
   let keytool = onPath('keytool');
-  let jarTool = jar;
   if (java) {
-    const binDir = path.dirname(fs.realpathSync(java));
-    if (!keytool) { const kt = path.join(binDir, 'keytool'); if (exists(kt)) keytool = kt; }
-    if (!jarTool) { const j = path.join(binDir, 'jar'); if (exists(j)) jarTool = j; }
+    try {
+      const binDir = path.dirname(fs.realpathSync(java));
+      const ext = IS_WIN ? '.exe' : '';
+      if (!javac) javac = pickExisting(path.join(binDir, 'javac' + ext));
+      if (!keytool) keytool = pickExisting(path.join(binDir, 'keytool' + ext));
+      if (!jarTool) jarTool = pickExisting(path.join(binDir, 'jar' + ext));
+    } catch { /* keep PATH results */ }
   }
   return java ? { java, javac, jar: jarTool, keytool } : null;
+}
+
+function sdkTool(bt, name, winExts = ['.exe', '.bat']) {
+  if (!bt) return null;
+  if (IS_WIN) {
+    for (const ext of winExts) {
+      const p = path.join(bt, name + ext);
+      if (exists(p)) return p;
+    }
+  }
+  return pickExisting(path.join(bt, name));
 }
 
 function discoverTools() {
@@ -101,18 +131,28 @@ function discoverTools() {
     java,
     kotlin,
     sdk,
-    aapt2: sdk ? path.join(sdk.buildTools, 'aapt2') : null,
-    d8: sdk ? path.join(sdk.buildTools, 'd8') : null,
-    zipalign: sdk ? path.join(sdk.buildTools, 'zipalign') : null,
-    apksigner: sdk ? path.join(sdk.buildTools, 'apksigner') : null,
+    aapt2: sdk ? sdkTool(sdk.buildTools, 'aapt2', ['.exe']) : null,
+    d8: sdk ? sdkTool(sdk.buildTools, 'd8', ['.bat', '.exe']) : null,
+    zipalign: sdk ? sdkTool(sdk.buildTools, 'zipalign', ['.exe']) : null,
+    apksigner: sdk ? sdkTool(sdk.buildTools, 'apksigner', ['.bat', '.exe']) : null,
     zip: onPath('zip'),
     keystore,
   };
 
   const missing = [];
   if (!java || !java.java) missing.push('java (JDK 11+)');
+  else {
+    if (!java.javac) missing.push('javac (JDK 11+ required, JRE alone is not enough)');
+    if (!java.keytool && !exists(keystore)) missing.push('keytool (JDK 11+)');
+  }
   if (!kotlin) missing.push('kotlinc (Kotlin compiler)');
-  if (!sdk) missing.push('Android SDK pieces (build-tools + platform): run tools/install.sh');
+  if (!sdk) {
+    missing.push('Android SDK pieces (build-tools + platform): run tools/install.sh');
+  } else {
+    for (const k of ['aapt2', 'd8', 'zipalign', 'apksigner']) {
+      if (!tools[k]) missing.push(`${k} (in Android build-tools)`);
+    }
+  }
   if (!tools.zip) missing.push('zip');
 
   return {

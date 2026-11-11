@@ -49,19 +49,49 @@ store.init({ projectsDir: PROJECTS_DIR, templatesDir: TEMPLATES_DIR });
 
 let buildRunning = false; // single-flight: one build at a time (low-RAM machines!)
 
-/* CORS: lets the IDE hosted elsewhere (e.g. GitHub Pages) drive a server
- * running on the user's own machine — builds stay local, the browser page
- * is just the remote control. Includes the Private-Network-Access header
- * Chromium requires for public-page -> localhost/LAN requests.
- * Applied via res.setHeader() up front, so every send() below inherits it. */
+/* CORS: lets the official hosted IDE (e.g. GitHub Pages) or localhost drive a
+ * server running on the user's own machine — builds stay local, the browser page
+ * is just the remote control — while blocking arbitrary third-party websites.
+ * Extra origins can be opted in via CORS_ORIGINS="https://a.example,https://b.example". */
+const DEFAULT_TRUSTED_ORIGINS = new Set([
+  'https://caraballojonathan2026-cpu.github.io',
+]);
+function configuredOrigins() {
+  const raw = (process.env.CORS_ORIGINS || '').trim();
+  if (!raw || raw === '*') return raw;
+  const s = new Set(DEFAULT_TRUSTED_ORIGINS);
+  for (const part of raw.split(',')) { const o = part.trim().replace(/\/+$/, ''); if (o) s.add(o); }
+  return s;
+}
+function isAllowedOrigin(origin, req) {
+  if (!origin) return false;
+  const cfg = configuredOrigins();
+  if (cfg === '*') return true;
+  try {
+    const u = new URL(origin);
+    if (req && req.headers && u.host === req.headers.host) return true;
+    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1' || u.hostname === '[::1]') return true;
+    if (cfg instanceof Set && cfg.has(u.origin)) return true;
+    return DEFAULT_TRUSTED_ORIGINS.has(u.origin);
+  } catch {
+    return false;
+  }
+}
 function corsHeaders(req) {
+  const origin = req.headers.origin;
+  if (!origin || !isAllowedOrigin(origin, req)) return { 'Vary': 'Origin' };
   return {
-    'Access-Control-Allow-Origin': req.headers.origin || '*',
+    'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Private-Network': 'true',
     'Vary': 'Origin',
   };
+}
+
+function safeDecode(s) {
+  try { return decodeURIComponent(s); }
+  catch { return null; }
 }
 
 function send(res, status, data, headers = {}) {
@@ -78,14 +108,24 @@ function send(res, status, data, headers = {}) {
 function readBody(req, limit = 32 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let over = false;
     const chunks = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > limit) { reject(new Error('body too large')); req.destroy(); return; }
+      if (size > limit) {
+        if (!over) {
+          over = true;
+          chunks.length = 0;
+          const err = new Error('body too large');
+          err.statusCode = 413;
+          reject(err);
+        }
+        return;
+      }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
+    req.on('end', () => { if (!over) resolve(Buffer.concat(chunks)); });
+    req.on('error', (e) => { if (!over) reject(e); });
   });
 }
 
@@ -97,10 +137,11 @@ async function readJson(req) {
 }
 
 function serveStatic(res, urlPath) {
-  let rel = decodeURIComponent(urlPath);
+  let rel = safeDecode(urlPath);
+  if (rel === null) return send(res, 400, { error: 'malformed URL' });
   if (rel === '/' || rel === '') rel = '/index.html';
-  const file = path.normalize(path.join(WEB_DIR, rel));
-  if (!file.startsWith(WEB_DIR)) return send(res, 403, { error: 'forbidden' });
+  const file = path.resolve(WEB_DIR, '.' + (rel.startsWith('/') ? rel : '/' + rel));
+  if (!file.startsWith(WEB_DIR + path.sep)) return send(res, 403, { error: 'forbidden' });
   fs.readFile(file, (err, buf) => {
     if (err) return send(res, 404, { error: 'not found: ' + rel });
     send(res, 200, buf, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
@@ -130,6 +171,15 @@ async function handleApi(req, res, u) {
   if (req.method === 'GET' && p === '/api/file') {
     const { content, mtime, size } = store.readFile(q.get('project'), q.get('path'));
     return send(res, 200, { path: q.get('path'), content, mtime, size });
+  }
+
+  if (req.method === 'GET' && p === '/api/file/raw') {
+    const { buf, name } = store.readRawFile(q.get('project'), q.get('path'));
+    const safeDisp = name.replace(/["\\\r\n]/g, '_');
+    return send(res, 200, buf, {
+      'Content-Type': MIME[path.extname(name).toLowerCase()] || 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${safeDisp}"`,
+    });
   }
 
   if (req.method === 'POST' && p === '/api/file') {
@@ -163,48 +213,56 @@ async function handleApi(req, res, u) {
 
   // ---- git (commit button) ----
   if (req.method === 'GET' && p === '/api/git/status') {
-    const project = q.get('project');
-    store.projectRoot(project); // validates it exists
-    return send(res, 200, git.status(ROOT, project));
+    const safeProj = path.basename(store.projectRoot(q.get('project')));
+    return send(res, 200, git.status(ROOT, safeProj));
   }
 
   if (req.method === 'POST' && p === '/api/git/commit') {
     const { project, message, description } = await readJson(req);
-    store.projectRoot(project); // validates it exists
-    const r = git.commit(ROOT, project, message, description);
+    const safeProj = path.basename(store.projectRoot(project));
+    const r = git.commit(ROOT, safeProj, message, description);
     return send(res, r.ok ? 200 : 400, r);
   }
 
   // ---- import / export ----
   if (req.method === 'GET' && p === '/api/project/export') {
-    const project = q.get('project');
-    const root = store.projectRoot(project);
-    const tmp = path.join(os.tmpdir(), `cd-export-${Date.now()}.zip`);
+    const root = store.projectRoot(q.get('project'));
+    const safeProj = path.basename(root);
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cd-export-'));
+    const tmp = path.join(workDir, `${safeProj}.zip`);
     try {
       execFileSync('zip', ['-qr', tmp, '.', '-x', 'build/*', 'build'], { cwd: root });
       const buf = fs.readFileSync(tmp);
       return send(res, 200, buf, {
         'Content-Type': MIME['.zip'],
-        'Content-Disposition': `attachment; filename="${project}.zip"`,
+        'Content-Disposition': `attachment; filename="${safeProj}.zip"`,
       });
-    } finally { fs.rmSync(tmp, { force: true }); }
+    } finally { fs.rmSync(workDir, { recursive: true, force: true }); }
   }
 
   if (req.method === 'POST' && p === '/api/project/import') {
     const raw = await readBody(req, 64 * 1024 * 1024);
     if (!raw.length) throw new Error('empty upload');
     const wanted = (q.get('name') || 'imported').replace(/\.zip$/i, '');
-    const tmpZip = path.join(os.tmpdir(), `cd-import-${Date.now()}.zip`);
-    const tmpDir = tmpZip.replace(/\.zip$/, '-dir');
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cd-import-'));
+    const tmpZip = path.join(workDir, 'upload.zip');
+    const tmpDir = path.join(workDir, 'unpacked');
     fs.writeFileSync(tmpZip, raw);
     try {
+      const listing = execFileSync('unzip', ['-Z1', tmpZip], { encoding: 'utf8' });
+      for (const entry of listing.split(/\r?\n/)) {
+        if (!entry) continue;
+        const norm = path.posix.normalize(entry.replace(/\\/g, '/'));
+        if (norm.startsWith('../') || norm === '..' || path.posix.isAbsolute(norm)) {
+          throw new Error('unsafe path in zip archive: ' + entry);
+        }
+      }
       fs.mkdirSync(tmpDir, { recursive: true });
       execFileSync('unzip', ['-q', '-o', tmpZip, '-d', tmpDir]);
       const { id } = store.importDir(tmpDir, wanted);
       return send(res, 200, { imported: id });
     } finally {
-      fs.rmSync(tmpZip, { force: true });
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(workDir, { recursive: true, force: true });
     }
   }
 
@@ -222,12 +280,13 @@ async function handleApi(req, res, u) {
   }
 
   if (req.method === 'GET' && p === '/api/apk') {
-    const apkPath = store.apkPath(q.get('project'));
+    const safeProj = path.basename(store.projectRoot(q.get('project')));
+    const apkPath = store.apkPath(safeProj);
     if (!apkPath) return send(res, 404, { error: 'No APK yet — build the project first.' });
     const buf = fs.readFileSync(apkPath);
     return send(res, 200, buf, {
       'Content-Type': MIME['.apk'],
-      'Content-Disposition': `attachment; filename="${q.get('project')}-debug.apk"`,
+      'Content-Disposition': `attachment; filename="${safeProj}-debug.apk"`,
     });
   }
 
@@ -244,32 +303,52 @@ async function handleApi(req, res, u) {
 const server = http.createServer(async (req, res) => {
   for (const [k, v] of Object.entries(corsHeaders(req))) res.setHeader(k, v);
   if (req.method === 'OPTIONS') { // CORS / Private-Network preflight
+    if (req.headers.origin && !isAllowedOrigin(req.headers.origin, req)) {
+      return send(res, 403, { error: 'Origin not allowed' });
+    }
     res.writeHead(204);
     return res.end();
   }
   const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
-    if (u.pathname.startsWith('/api/')) return await handleApi(req, res, u);
+    if (u.pathname.startsWith('/api/')) {
+      if (req.headers.origin && !isAllowedOrigin(req.headers.origin, req)) {
+        return send(res, 403, { error: 'Origin not allowed' });
+      }
+      if (req.headers['sec-fetch-site'] === 'cross-site' && (!req.headers.origin || !isAllowedOrigin(req.headers.origin, req))) {
+        return send(res, 403, { error: 'Cross-site request blocked' });
+      }
+      return await handleApi(req, res, u);
+    }
     if (u.pathname.startsWith('/releases/')) {
       // built APKs, downloadable as attachments
-      const rel = decodeURIComponent(u.pathname.slice('/releases/'.length));
-      const file = path.normalize(path.join(RELEASES_DIR, rel));
-      if (!file.startsWith(RELEASES_DIR)) return send(res, 403, { error: 'forbidden' });
+      const rel = safeDecode(u.pathname.slice('/releases/'.length));
+      if (!rel) return send(res, 400, { error: 'invalid path' });
+      const file = path.resolve(RELEASES_DIR, rel);
+      if (!file.startsWith(RELEASES_DIR + path.sep)) return send(res, 403, { error: 'forbidden' });
       return fs.readFile(file, (err, buf) => {
         if (err) return send(res, 404, { error: 'not found — build something first' });
+        const safeName = path.basename(file).replace(/["\\\r\n]/g, '_');
         send(res, 200, buf, {
           'Content-Type': MIME['.apk'],
-          'Content-Disposition': `attachment; filename="${path.basename(file)}"`,
+          'Content-Disposition': `attachment; filename="${safeName}"`,
         });
       });
     }
     return serveStatic(res, u.pathname);
   } catch (e) {
-    return send(res, 400, { error: e.message });
+    const code = e.statusCode || (/not found/i.test(e.message) ? 404 : 400);
+    const extra = code === 413 ? { Connection: 'close' } : {};
+    if (code === 413) res.on('finish', () => req.destroy());
+    return send(res, code, { error: e.message }, extra);
   }
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`code-droid IDE ready:  http://${HOST}:${PORT}`);
-  console.log(`projects directory:    ${PROJECTS_DIR}`);
-});
+if (require.main === module) {
+  server.listen(PORT, HOST, () => {
+    console.log(`code-droid IDE ready:  http://${HOST}:${PORT}`);
+    console.log(`projects directory:    ${PROJECTS_DIR}`);
+  });
+}
+
+module.exports = { server, isAllowedOrigin };

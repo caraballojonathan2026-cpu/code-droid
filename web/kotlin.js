@@ -63,12 +63,50 @@
     return out;
   }
 
+  const XML_OUTSIDE = /<!--[\s\S]*?(?:-->|$)|<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<[?!][\s\S]*?(?:>|$)|<\/?[A-Za-z_:][\w:.-]*/g;
+  const XML_INSIDE = /\s+|\/?>|([A-Za-z_:][\w:.-]*)(?:(\s*=\s*)("[^"]*"|'[^']*'|[^\s>"'</]*))?|("[^"]*"|'[^']*')|[\s\S]/g;
+
   function highlightXml(src) {
-    return escapeHtml(src)
-      .replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span class="tok-com">$1</span>')
-      .replace(/(&lt;\/?)([\w:.-]+)/g, '$1<span class="tok-kw">$2</span>')
-      .replace(/([\w:.-]+)(=)(&quot;.*?&quot;|".*?")/g, '<span class="tok-ann">$1</span>$2<span class="tok-str">$3</span>')
-      .replace(/(\/?&gt;)/g, '<span class="tok-kw">$1</span>');
+    let out = '';
+    let pos = 0;
+    while (pos < src.length) {
+      XML_OUTSIDE.lastIndex = pos;
+      const m = XML_OUTSIDE.exec(src);
+      if (!m) { out += escapeHtml(src.slice(pos)); break; }
+      if (m.index > pos) out += escapeHtml(src.slice(pos, m.index));
+      const tok = m[0];
+      pos = m.index + tok.length;
+      if (tok.startsWith('<!--') || tok.startsWith('<?') || (tok.startsWith('<!') && !tok.startsWith('<![CDATA['))) {
+        out += `<span class="tok-com">${escapeHtml(tok)}</span>`;
+      } else if (tok.startsWith('<![CDATA[')) {
+        out += `<span class="tok-str">${escapeHtml(tok)}</span>`;
+      } else {
+        const slash = tok.startsWith('</') ? '</' : '<';
+        const name = tok.slice(slash.length);
+        out += `${escapeHtml(slash)}<span class="tok-kw">${escapeHtml(name)}</span>`;
+        while (pos < src.length) {
+          if (src[pos] === '<') break; // unclosed tag before next tag
+          XML_INSIDE.lastIndex = pos;
+          const im = XML_INSIDE.exec(src);
+          if (!im || im.index !== pos) { out += escapeHtml(src[pos++]); continue; }
+          const itok = im[0];
+          pos += itok.length;
+          if (itok === '>' || itok === '/>') {
+            out += `<span class="tok-kw">${escapeHtml(itok)}</span>`;
+            break;
+          } else if (im[1] !== undefined) {
+            out += `<span class="tok-ann">${escapeHtml(im[1])}</span>`;
+            if (im[2] !== undefined) out += `${escapeHtml(im[2])}<span class="tok-str">${escapeHtml(im[3])}</span>`;
+          } else if (im[4] !== undefined) {
+            out += `<span class="tok-str">${escapeHtml(im[4])}</span>`;
+          } else {
+            out += escapeHtml(itok);
+          }
+        }
+      }
+    }
+    if (out.endsWith('\n')) out += ' ';
+    return out;
   }
 
   global.CDHighlight = function (filename, src) {

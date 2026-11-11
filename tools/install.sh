@@ -16,33 +16,59 @@ SDK="$DEST/sdk"
 KOTLIN_DIR="$DEST/kotlin"
 mkdir -p "$SDK/build-tools" "$SDK/platforms" "$KOTLIN_DIR"
 
-OS="linux"
-[ "$(uname -s)" = "Darwin" ] && OS="mac"
+UNAME_S="$(uname -s)"
+UNAME_M="$(uname -m)"
+case "$UNAME_S" in
+  Darwin*)               OS="mac" ;;
+  MINGW*|MSYS*|CYGWIN*)  OS="windows" ;;
+  *)                     OS="linux" ;;
+esac
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==>\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+if [ "$OS" = "linux" ] && [ "$UNAME_M" != "x86_64" ] && [ "$UNAME_M" != "amd64" ]; then
+  warn "Detected Linux/$UNAME_M: Google's standalone build-tools zip ships x86_64 binaries (aapt2/zipalign may need qemu-x86_64 or system packages)."
+fi
+
 command -v java   >/dev/null || die "java (JDK 11+) not found. Install a JDK first (e.g. 'sudo apt install openjdk-17-jdk-headless')."
+command -v javac  >/dev/null || die "javac not found — a full JDK 11+ is required (JRE alone is not enough)."
 command -v unzip  >/dev/null || die "unzip not found (e.g. 'sudo apt install unzip')."
 DL=""
-if command -v curl >/dev/null; then DL="curl -fL --retry 3 -o";
+if command -v curl >/dev/null; then DL="curl -fL --retry 2 -o";
 elif command -v wget >/dev/null; then DL="wget -O";
 else die "need curl or wget"; fi
 
 fetch() { # fetch <url> <outfile> ; returns non-zero on 404
   local url="$1" out="$2"
   say "Downloading $(basename "$out")"
-  $DL "$out" "$url" 2>>/dev/null || $DL "$out" "$url" || return 1
+  $DL "$out" "$url" || { rm -f "$out"; return 1; }
 }
 
+# Reuse an existing Android SDK if ANDROID_HOME / ANDROID_SDK_ROOT / ~/Android/Sdk is complete
+EXISTING_SDK=""
+for cand in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Android/Sdk"; do
+  [ -n "$cand" ] && [ -d "$cand" ] || continue
+  if (ls "$cand"/build-tools/*/aapt2 >/dev/null 2>&1 || ls "$cand"/build-tools/*/aapt2.exe >/dev/null 2>&1) \
+     && ls "$cand"/platforms/android-*/android.jar >/dev/null 2>&1; then
+    EXISTING_SDK="$cand"
+    break
+  fi
+done
+
 # ---- 1) Android build-tools (aapt2, d8, zipalign, apksigner) ----
-if ! ls "$SDK"/build-tools/*/aapt2 >/dev/null 2>&1; then
+if [ -n "$EXISTING_SDK" ]; then
+  say "Reusing existing Android SDK build-tools from $EXISTING_SDK"
+elif ! ls "$SDK"/build-tools/*/aapt2* >/dev/null 2>&1; then
   ok=""
   for v in 34.0.0 35.0.0 33.0.1; do
     major="${v%%.*}"
-    if [ "$OS" = "mac" ]; then url="https://dl.google.com/android/repository/build-tools_r${major}-macosx.zip"
-    else url="https://dl.google.com/android/repository/build-tools_r${major}-linux.zip"; fi
+    case "$OS" in
+      mac)     url="https://dl.google.com/android/repository/build-tools_r${major}-macosx.zip" ;;
+      windows) url="https://dl.google.com/android/repository/build-tools_r${major}-windows.zip" ;;
+      *)       url="https://dl.google.com/android/repository/build-tools_r${major}-linux.zip" ;;
+    esac
     if fetch "$url" "$DEST/build-tools.zip"; then ok="$v"; break; fi
   done
   [ -n "$ok" ] || die "could not download build-tools"
@@ -59,7 +85,9 @@ else
 fi
 
 # ---- 2) Android platform (android.jar — the API to compile against) ----
-if [ ! -f "$SDK/platforms/android-34/android.jar" ]; then
+if [ -n "$EXISTING_SDK" ]; then
+  say "Reusing existing Android platform from $EXISTING_SDK"
+elif ! ls "$SDK"/platforms/android-*/android.jar >/dev/null 2>&1; then
   ok=""
   for v in "34_r03" "34_r02" "34_r01" "33_r02"; do
     api="${v%%_*}"
